@@ -307,14 +307,21 @@ func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request, buc
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *Handler) handleHeadBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+func (h *Handler) checkBucketExists(w http.ResponseWriter, r *http.Request, bucket string) bool {
 	exists, err := h.service.HasBucket(bucket)
 	if err != nil {
 		MapErrorToS3(w, r, err)
-		return
+		return false
 	}
 	if !exists {
 		WriteError(w, r, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+		return false
+	}
+	return true
+}
+
+func (h *Handler) handleHeadBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+	if !h.checkBucketExists(w, r, bucket) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -370,6 +377,10 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request, bucket
 }
 
 func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !h.checkBucketExists(w, r, bucket) {
+		return
+	}
+
 	rc, meta, err := h.service.GetObject(bucket, key)
 	if err != nil {
 		MapErrorToS3(w, r, err)
@@ -391,6 +402,10 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 }
 
 func (h *Handler) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !h.checkBucketExists(w, r, bucket) {
+		return
+	}
+
 	meta, err := h.service.GetObjectMeta(bucket, key)
 	if err != nil {
 		MapErrorToS3(w, r, err)
@@ -410,6 +425,10 @@ func (h *Handler) handleHeadObject(w http.ResponseWriter, r *http.Request, bucke
 }
 
 func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !h.checkBucketExists(w, r, bucket) {
+		return
+	}
+
 	err := h.service.DeleteObject(r.Context(), bucket, key)
 	if err != nil {
 		MapErrorToS3(w, r, err)
@@ -419,6 +438,10 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request, buc
 }
 
 func (h *Handler) handleListObjectsV2(w http.ResponseWriter, r *http.Request, bucket string) {
+	if !h.checkBucketExists(w, r, bucket) {
+		return
+	}
+
 	q := r.URL.Query()
 	prefix := q.Get("prefix")
 	delimiter := q.Get("delimiter")
@@ -468,6 +491,10 @@ func (h *Handler) handleListObjectsV2(w http.ResponseWriter, r *http.Request, bu
 }
 
 func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request, bucket string) {
+	if !h.checkBucketExists(w, r, bucket) {
+		return
+	}
+
 	var req DeleteRequest
 	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, r, "InvalidArgument", "Invalid XML request body", http.StatusBadRequest)
@@ -608,6 +635,10 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !h.checkBucketExists(w, r, bucket) {
+		return
+	}
+
 	uploadID := r.URL.Query().Get("uploadId")
 	parts, err := h.service.GetMultipartParts(bucket, uploadID)
 	if err != nil {
