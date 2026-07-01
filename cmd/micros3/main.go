@@ -95,7 +95,7 @@ func main() {
 	// 6. Initialize Auth Validator (if credentials are set)
 	var authValidator *s3api.AuthValidator
 	if len(cfg.S3.Credentials) > 0 && cfg.S3.Credentials[0].AccessKey != "" {
-		authValidator = s3api.NewAuthValidator(cfg.S3.Credentials, cfg.S3.Region)
+		authValidator = s3api.NewAuthValidator(cfg.S3.Credentials)
 		logger.Info("S3 Authentication enabled (AWS Signature V4)")
 	} else {
 		logger.Warn("S3 Authentication disabled! Anonymous access allowed")

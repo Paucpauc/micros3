@@ -23,13 +23,11 @@ var authHeaderRegex = regexp.MustCompile(`AWS4-HMAC-SHA256\s+Credential=([^/]+)/
 // AuthValidator validates S3 AWS Signature V4 requests
 type AuthValidator struct {
 	credentials []config.Credentials
-	region      string
 }
 
-func NewAuthValidator(credentials []config.Credentials, region string) *AuthValidator {
+func NewAuthValidator(credentials []config.Credentials) *AuthValidator {
 	return &AuthValidator{
 		credentials: credentials,
-		region:      region,
 	}
 }
 
@@ -54,10 +52,7 @@ func (av *AuthValidator) ValidateRequest(r *http.Request) (string, error) {
 	signedHeadersStr := matches[4]
 	signatureHex := matches[5]
 
-	// Check region
-	if regionStr != av.region {
-		return "", fmt.Errorf("region mismatch: expected %s, got %s", av.region, regionStr)
-	}
+	// Region is taken from the request credential scope
 
 	// 2. Find secret key
 	var secretKey string
