@@ -130,11 +130,9 @@ func main() {
 						continue
 					}
 					metrics.DedupLinksTotal.Add(float64(linked))
-					if linked > 0 {
-						logger.Info("Deduplication completed",
-							zap.Int("files_linked", linked),
-						)
-					}
+					logger.Info("Deduplication completed",
+						zap.Int("files_linked", linked),
+					)
 				}
 			}
 		}()
