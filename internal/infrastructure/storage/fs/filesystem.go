@@ -522,6 +522,23 @@ func (r *FilesystemRepository) GetMultipartPartReader(bucket, uploadID string, p
 	return f, nil
 }
 
+func (r *FilesystemRepository) DeleteMultipartPart(bucket, uploadID string, partNum int) error {
+	sessionDir := r.uploadSessionDir(bucket, uploadID)
+	partPath := filepath.Join(sessionDir, fmt.Sprintf("%05d", partNum))
+	
+	// Delete the part file
+	if err := os.Remove(partPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	
+	// Delete the part metadata file
+	if err := os.Remove(partPath + ".json"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	
+	return nil
+}
+
 
 func (r *FilesystemRepository) GetMultipartParts(bucket, uploadID string) ([]s3.UploadPart, error) {
 	sessionDir := r.uploadSessionDir(bucket, uploadID)

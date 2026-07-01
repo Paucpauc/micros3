@@ -530,29 +530,19 @@ func (s *Service) CompleteMultipartUpload(ctx context.Context, bucket, key, uplo
 		return sortedParts[i].PartNumber < sortedParts[j].PartNumber
 	})
 
-	// Open read closers for all parts to stream them sequentially
-	var readers []io.Reader
-	var closers []io.Closer
-
-	defer func() {
-		for _, c := range closers {
-			_ = c.Close()
-		}
-	}()
-
 	var totalSize int64
 	for _, part := range sortedParts {
-		pr, err := s.storage.GetMultipartPartReader(bucket, uploadID, part.PartNumber)
-		if err != nil {
-			return s3.ObjectMeta{}, fmt.Errorf("failed to open reader for part %d: %w", part.PartNumber, err)
-		}
-		readers = append(readers, pr)
-		closers = append(closers, pr)
 		totalSize += part.Size
 	}
 
-	// Create single concatenated reader
-	concatReader := io.MultiReader(readers...)
+	// Create reader that yields part bytes and deletes part files immediately upon EOF
+	partReader := &multipartPartsReader{
+		storage:  s.storage,
+		bucket:   bucket,
+		uploadID: uploadID,
+		parts:    sortedParts,
+	}
+	defer partReader.Close()
 
 	// Compute final S3 ETag: MD5(concatenated binary MD5s) + "-" + num_parts
 	h := md5.New()
@@ -580,7 +570,7 @@ func (s *Service) CompleteMultipartUpload(ctx context.Context, bucket, key, uplo
 		ModifiedAt:  time.Now(),
 	}
 
-	committedMeta, err := s.PutObject(ctx, uploadSession.Bucket, uploadSession.Key, concatReader, totalSize, meta)
+	committedMeta, err := s.PutObject(ctx, uploadSession.Bucket, uploadSession.Key, partReader, totalSize, meta)
 	if err != nil {
 		return s3.ObjectMeta{}, fmt.Errorf("failed to commit completed multipart object: %w", err)
 	}
@@ -596,4 +586,62 @@ func (s *Service) CompleteMultipartUpload(ctx context.Context, bucket, key, uplo
 func (s *Service) AbortMultipartUpload(bucket, uploadID string) error {
 	s.logger.Info("AbortMultipartUpload", zap.String("bucket", bucket), zap.String("uploadID", uploadID))
 	return s.storage.AbortMultipartUpload(bucket, uploadID)
+}
+
+type multipartPartsReader struct {
+	storage   StorageRepository
+	bucket    string
+	uploadID  string
+	parts     []s3.UploadPart
+	curIndex  int
+	curReader io.ReadCloser
+}
+
+func (m *multipartPartsReader) Read(p []byte) (n int, err error) {
+	for {
+		if m.curReader == nil {
+			if m.curIndex >= len(m.parts) {
+				return 0, io.EOF
+			}
+			part := m.parts[m.curIndex]
+			pr, err := m.storage.GetMultipartPartReader(m.bucket, m.uploadID, part.PartNumber)
+			if err != nil {
+				return 0, fmt.Errorf("failed to open reader for part %d: %w", part.PartNumber, err)
+			}
+			m.curReader = pr
+		}
+
+		n, err = m.curReader.Read(p)
+		if err == io.EOF {
+			// Done reading this part.
+			// 1. Close current part reader.
+			_ = m.curReader.Close()
+			m.curReader = nil
+
+			// 2. Delete part files to save space.
+			part := m.parts[m.curIndex]
+			if errDel := m.storage.DeleteMultipartPart(m.bucket, m.uploadID, part.PartNumber); errDel != nil {
+				return n, fmt.Errorf("failed to delete part %d: %w", part.PartNumber, errDel)
+			}
+
+			// Move to the next part
+			m.curIndex++
+
+			if n > 0 {
+				return n, nil
+			}
+			continue
+		}
+
+		return n, err
+	}
+}
+
+func (m *multipartPartsReader) Close() error {
+	if m.curReader != nil {
+		err := m.curReader.Close()
+		m.curReader = nil
+		return err
+	}
+	return nil
 }

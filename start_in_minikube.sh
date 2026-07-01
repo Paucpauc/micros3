@@ -20,6 +20,7 @@ kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/configmap.yaml
 kubectl apply -f deploy/service.yaml
 kubectl apply -f deploy/service-leader.yaml
+kubectl apply -f deploy/service-ro.yaml
 kubectl apply -f deploy/statefulset.yaml
 
 echo "=== Waiting for StatefulSet pods to be ready ==="

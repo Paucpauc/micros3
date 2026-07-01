@@ -32,6 +32,7 @@ type StorageRepository interface {
 	CreateMultipartUpload(bucket, key string) (string, error)
 	SaveMultipartPart(bucket, uploadID string, partNum int, r io.Reader) (s3.UploadPart, error)
 	GetMultipartPartReader(bucket, uploadID string, partNum int) (io.ReadCloser, error)
+	DeleteMultipartPart(bucket, uploadID string, partNum int) error
 	GetMultipartParts(bucket, uploadID string) ([]s3.UploadPart, error)
 	AbortMultipartUpload(bucket, uploadID string) error
 	GetMultipartUpload(bucket, uploadID string) (s3.MultipartUpload, error)

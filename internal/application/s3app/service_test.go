@@ -25,6 +25,7 @@ type mockStorage struct {
 	multipartUploads map[string]s3.MultipartUpload
 	multipartParts   map[string]map[int]s3.UploadPart
 	multipartReaders map[string]map[int][]byte
+	deletedParts     []int
 }
 
 func newMockStorage() *mockStorage {
@@ -173,7 +174,7 @@ func (m *mockStorage) SaveMultipartPart(bucket, uploadID string, partNum int, r 
 	part := s3.UploadPart{
 		PartNumber: partNum,
 		Size:       int64(len(data)),
-		ETag:       "\"mock-part-etag\"",
+		ETag:       "\"0123456789abcdef0123456789abcdef\"",
 		CRC32:      999,
 		ModifiedAt: time.Now(),
 	}
@@ -184,6 +185,17 @@ func (m *mockStorage) SaveMultipartPart(bucket, uploadID string, partNum int, r 
 func (m *mockStorage) GetMultipartPartReader(bucket, uploadID string, partNum int) (io.ReadCloser, error) {
 	data := m.multipartReaders[uploadID][partNum]
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (m *mockStorage) DeleteMultipartPart(bucket, uploadID string, partNum int) error {
+	m.deletedParts = append(m.deletedParts, partNum)
+	if m.multipartParts[uploadID] != nil {
+		delete(m.multipartParts[uploadID], partNum)
+	}
+	if m.multipartReaders[uploadID] != nil {
+		delete(m.multipartReaders[uploadID], partNum)
+	}
+	return nil
 }
 
 func (m *mockStorage) GetMultipartParts(bucket, uploadID string) ([]s3.UploadPart, error) {
@@ -380,5 +392,67 @@ func TestPutObjectWaitBehavior(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("timed out waiting for PutObject to complete after unblocking")
+	}
+}
+
+func TestCompleteMultipartUploadDeletesPartsOnTheFly(t *testing.T) {
+	storage := newMockStorage()
+	replicator := &mockReplicator{}
+	cluster := &mockClusterManager{}
+	service := NewService(storage, replicator, cluster, zap.NewNop())
+
+	bucket := "test-bucket"
+	key := "large-file.bin"
+	_ = service.CreateBucket(bucket)
+
+	uploadID, err := service.CreateMultipartUpload(bucket, key)
+	if err != nil {
+		t.Fatalf("failed to create multipart upload: %v", err)
+	}
+
+	// Save 3 parts
+	part1 := []byte("part1-data-")
+	part2 := []byte("part2-data-")
+	part3 := []byte("part3-data")
+
+	p1, err := service.SaveMultipartPart(bucket, uploadID, 1, bytes.NewReader(part1))
+	if err != nil {
+		t.Fatalf("failed to save part 1: %v", err)
+	}
+	p2, err := service.SaveMultipartPart(bucket, uploadID, 2, bytes.NewReader(part2))
+	if err != nil {
+		t.Fatalf("failed to save part 2: %v", err)
+	}
+	p3, err := service.SaveMultipartPart(bucket, uploadID, 3, bytes.NewReader(part3))
+	if err != nil {
+		t.Fatalf("failed to save part 3: %v", err)
+	}
+
+	requestedParts := []s3.CompletePart{
+		{PartNumber: 1, ETag: p1.ETag},
+		{PartNumber: 2, ETag: p2.ETag},
+		{PartNumber: 3, ETag: p3.ETag},
+	}
+
+	meta, err := service.CompleteMultipartUpload(context.Background(), bucket, key, uploadID, requestedParts)
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload failed: %v", err)
+	}
+
+	// Verify the final concatenated content length
+	expectedLen := int64(len(part1) + len(part2) + len(part3))
+	if meta.ContentLength != expectedLen {
+		t.Errorf("expected ContentLength %d, got %d", expectedLen, meta.ContentLength)
+	}
+
+	// Verify that DeleteMultipartPart was called for parts 1, 2, and 3
+	expectedDeleted := []int{1, 2, 3}
+	if len(storage.deletedParts) != 3 {
+		t.Fatalf("expected 3 deleted parts, got %d: %v", len(storage.deletedParts), storage.deletedParts)
+	}
+	for i, v := range expectedDeleted {
+		if storage.deletedParts[i] != v {
+			t.Errorf("expected deleted part at index %d to be %d, got %d", i, v, storage.deletedParts[i])
+		}
 	}
 }

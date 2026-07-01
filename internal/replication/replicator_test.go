@@ -69,6 +69,9 @@ func (m *mockStorage) SaveMultipartPart(bucket, uploadID string, partNum int, r 
 func (m *mockStorage) GetMultipartPartReader(bucket, uploadID string, partNum int) (io.ReadCloser, error) {
 	return nil, nil
 }
+func (m *mockStorage) DeleteMultipartPart(bucket, uploadID string, partNum int) error {
+	return nil
+}
 func (m *mockStorage) GetMultipartParts(bucket, uploadID string) ([]s3.UploadPart, error) {
 	return nil, nil
 }
