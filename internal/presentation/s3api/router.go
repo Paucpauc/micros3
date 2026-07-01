@@ -185,7 +185,7 @@ func (h *Handler) logAccess(rw *responseWriter, r *http.Request, accessKey strin
 		zap.Int("size", rw.size),
 		zap.String("access_key", accessKey),
 		zap.String("request_id", r.Header.Get("X-Amz-Request-Id")),
-		zap.Duration("duration", time.Since(start)),
+		zap.String("duration", fmt.Sprintf("%.6f", time.Since(start).Seconds())),
 	)
 }
 
