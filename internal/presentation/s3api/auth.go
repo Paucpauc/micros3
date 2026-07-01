@@ -304,10 +304,17 @@ func getCanonicalQueryString(query url.Values) string {
 // pathEscape performs S3-compatible path escaping
 func pathEscape(s string) string {
 	escaped := url.PathEscape(s)
-	// Go PathEscape encodes '+' as '%2B', but spaces as '%20'
-	// SigV4 expects space to be '%20', and standard encoding rules.
-	// PathEscape is generally correct, but let's ensure asterisks are encoded as '%2A'
 	escaped = strings.ReplaceAll(escaped, "*", "%2A")
+	escaped = strings.ReplaceAll(escaped, "!", "%21")
+	escaped = strings.ReplaceAll(escaped, "'", "%27")
+	escaped = strings.ReplaceAll(escaped, "(", "%28")
+	escaped = strings.ReplaceAll(escaped, ")", "%29")
+	escaped = strings.ReplaceAll(escaped, "+", "%2B")
+	escaped = strings.ReplaceAll(escaped, ",", "%2C")
+	escaped = strings.ReplaceAll(escaped, ":", "%3A")
+	escaped = strings.ReplaceAll(escaped, ";", "%3B")
+	escaped = strings.ReplaceAll(escaped, "=", "%3D")
+	escaped = strings.ReplaceAll(escaped, "@", "%40")
 	return escaped
 }
 
