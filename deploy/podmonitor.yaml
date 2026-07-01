@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: micros3
+  labels:
+    app: micros3
+spec:
+  selector:
+    matchLabels:
+      app: micros3
+  podMetricsEndpoints:
+    - port: s3
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
