@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/paucpauc/micros3/internal/domain/s3"
+	"github.com/paucpauc/micros3/internal/metrics"
 	"go.uber.org/zap"
 )
 
@@ -51,6 +52,40 @@ func (s *Service) SetWriteBlockBehavior(behavior string) {
 	}
 }
 
+func (s *Service) UpdateStorageMetrics() {
+	buckets, err := s.storage.ListBuckets()
+	if err != nil {
+		return
+	}
+	metrics.BucketsTotal.Set(float64(len(buckets)))
+
+	metrics.ObjectsTotal.Reset()
+	metrics.StorageUsedBytes.Reset()
+
+	for _, b := range buckets {
+		var objectsCount int64
+		var storageUsed int64
+		res, err := s.storage.ListObjectsV2(b, "", "", "", 100000)
+		if err == nil {
+			for _, c := range res.Contents {
+				objectsCount++
+				storageUsed += c.Size
+			}
+		}
+		metrics.ObjectsTotal.WithLabelValues(b).Set(float64(objectsCount))
+		metrics.StorageUsedBytes.WithLabelValues(b).Set(float64(storageUsed))
+	}
+}
+
+func (s *Service) UpdateClusterMetrics() {
+	if s.cluster.IsLeader() {
+		metrics.ClusterRole.Set(1)
+	} else {
+		metrics.ClusterRole.Set(0)
+	}
+	metrics.SetClusterStatus(s.cluster.Status())
+}
+
 func (s *Service) StartSyncLease(nodeID string) {
 	s.syncMutex.Lock()
 	defer s.syncMutex.Unlock()
@@ -60,12 +95,13 @@ func (s *Service) StartSyncLease(nodeID string) {
 	s.logger.Info("Starting replica sync lease (blocking new writes)", zap.String("nodeID", nodeID))
 	s.syncingNodes[nodeID] = time.Now()
 
-	// Wait for any active/in-flight writes to finish
 	for s.activeWrites > 0 {
 		s.logger.Info("Waiting for active write transactions to drain", zap.Int("activeWrites", s.activeWrites), zap.String("nodeID", nodeID))
 		s.writeCond.Wait()
 	}
 	s.logger.Info("All active write transactions drained, sync lease started", zap.String("nodeID", nodeID))
+	metrics.SyncLeaseActive.Set(1)
+	metrics.WritesBlocked.Set(1)
 }
 
 func (s *Service) HeartbeatSyncLease(nodeID string) {
@@ -86,7 +122,11 @@ func (s *Service) EndSyncLease(nodeID string) {
 	}
 	s.logger.Info("Ending replica sync lease", zap.String("nodeID", nodeID))
 	delete(s.syncingNodes, nodeID)
-	s.writeCond.Broadcast() // Wake up waiting write requests
+	s.writeCond.Broadcast()
+	if len(s.syncingNodes) == 0 {
+		metrics.SyncLeaseActive.Set(0)
+		metrics.WritesBlocked.Set(0)
+	}
 }
 
 func (s *Service) IsWritesBlocked() bool {
@@ -109,7 +149,11 @@ func (s *Service) isWritesBlockedLocked() bool {
 		}
 	}
 	if expiredAny {
-		s.writeCond.Broadcast() // Wake up waiting write requests if lease expired
+		s.writeCond.Broadcast()
+		if len(s.syncingNodes) == 0 {
+			metrics.SyncLeaseActive.Set(0)
+			metrics.WritesBlocked.Set(0)
+		}
 	}
 	return hasActiveSync
 }
@@ -159,11 +203,13 @@ func (s *Service) PutObject(ctx context.Context, bucket, key string, r io.Reader
 		}
 	}
 	s.activeWrites++
+	metrics.ActiveWrites.Set(float64(s.activeWrites))
 	s.syncMutex.Unlock()
 
 	defer func() {
 		s.syncMutex.Lock()
 		s.activeWrites--
+		metrics.ActiveWrites.Set(float64(s.activeWrites))
 		s.writeCond.Broadcast()
 		s.syncMutex.Unlock()
 	}()
@@ -222,7 +268,10 @@ func (s *Service) PutObject(ctx context.Context, bucket, key string, r io.Reader
 					zap.String("request_id", reqID),
 				)
 				s.cluster.MarkDead(nodeID)
+				metrics.ReplicationPrepareTotal.WithLabelValues("fail").Inc()
 				allPrepared = false
+			} else {
+				metrics.ReplicationPrepareTotal.WithLabelValues("success").Inc()
 			}
 		}
 
@@ -233,6 +282,7 @@ func (s *Service) PutObject(ctx context.Context, bucket, key string, r io.Reader
 			)
 			_ = s.storage.AbortTransaction(txID)
 			_ = s.replicator.AbortAll(ctx, txID)
+			metrics.ReplicationAbortTotal.WithLabelValues("prepare_failed").Inc()
 			return s3.ObjectMeta{}, errors.New("replication prepare failed, transaction aborted")
 		}
 	}
@@ -251,6 +301,7 @@ func (s *Service) PutObject(ctx context.Context, bucket, key string, r io.Reader
 		)
 		if len(followers) > 0 {
 			_ = s.replicator.AbortAll(ctx, txID)
+			metrics.ReplicationAbortTotal.WithLabelValues("local_commit_failed").Inc()
 		}
 		return s3.ObjectMeta{}, err
 	}
@@ -271,6 +322,9 @@ func (s *Service) PutObject(ctx context.Context, bucket, key string, r io.Reader
 					zap.String("request_id", reqID),
 				)
 				s.cluster.MarkDead(nodeID)
+				metrics.ReplicationCommitTotal.WithLabelValues("fail").Inc()
+			} else {
+				metrics.ReplicationCommitTotal.WithLabelValues("success").Inc()
 			}
 		}
 	}
@@ -315,11 +369,13 @@ func (s *Service) DeleteObject(ctx context.Context, bucket, key string) error {
 		}
 	}
 	s.activeWrites++
+	metrics.ActiveWrites.Set(float64(s.activeWrites))
 	s.syncMutex.Unlock()
 
 	defer func() {
 		s.syncMutex.Lock()
 		s.activeWrites--
+		metrics.ActiveWrites.Set(float64(s.activeWrites))
 		s.writeCond.Broadcast()
 		s.syncMutex.Unlock()
 	}()
@@ -377,7 +433,10 @@ func (s *Service) DeleteObject(ctx context.Context, bucket, key string) error {
 					zap.String("request_id", reqID),
 				)
 				s.cluster.MarkDead(nodeID)
+				metrics.ReplicationPrepareTotal.WithLabelValues("fail").Inc()
 				allPrepared = false
+			} else {
+				metrics.ReplicationPrepareTotal.WithLabelValues("success").Inc()
 			}
 		}
 
@@ -388,6 +447,7 @@ func (s *Service) DeleteObject(ctx context.Context, bucket, key string) error {
 			)
 			_ = s.storage.AbortTransaction(txID)
 			_ = s.replicator.AbortAll(ctx, txID)
+			metrics.ReplicationAbortTotal.WithLabelValues("prepare_failed").Inc()
 			return errors.New("replication prepare failed, transaction aborted")
 		}
 	}
@@ -406,6 +466,7 @@ func (s *Service) DeleteObject(ctx context.Context, bucket, key string) error {
 		)
 		if len(followers) > 0 {
 			_ = s.replicator.AbortAll(ctx, txID)
+			metrics.ReplicationAbortTotal.WithLabelValues("local_commit_failed").Inc()
 		}
 		return err
 	}
@@ -426,6 +487,9 @@ func (s *Service) DeleteObject(ctx context.Context, bucket, key string) error {
 					zap.String("request_id", reqID),
 				)
 				s.cluster.MarkDead(nodeID)
+				metrics.ReplicationCommitTotal.WithLabelValues("fail").Inc()
+			} else {
+				metrics.ReplicationCommitTotal.WithLabelValues("success").Inc()
 			}
 		}
 	}

@@ -193,9 +193,23 @@ Each pod discovers its identity using the `MICROS3_NODE_ID` environment variable
 Each MicroS3 node exposes endpoints on its main S3 API port:
 * **`/health`**: Returns `{"status":"OK"}`. Used for K8s `livenessProbe` and `readinessProbe`.
 * **`/metrics`**: Exports Prometheus-format metrics:
-  - `micros3_objects_total` — Total count of objects on the node.
-  - `micros3_storage_used_bytes` — Storage space used by objects (in bytes).
-  - `micros3_cluster_leader` — Flag indicating node role (1 if leader, 0 if follower).
+  - `micros3_requests_total{method,bucket,code}` — Total S3 API request count by HTTP method, bucket, and status code.
+  - `micros3_request_duration_seconds{method,bucket}` — Histogram of S3 API request durations.
+  - `micros3_bytes_written_total{method,bucket}` — Total bytes written (PUT/POST) per method and bucket.
+  - `micros3_bytes_read_total{method,bucket}` — Total bytes read (GET/HEAD) per method and bucket.
+  - `micros3_objects_total{bucket}` — Number of objects per bucket.
+  - `micros3_storage_used_bytes{bucket}` — Storage used per bucket (in bytes).
+  - `micros3_buckets_total` — Total number of buckets.
+  - `micros3_cluster_role` — Node role (1=leader, 0=follower).
+  - `micros3_cluster_status{status}` — Node status (1 for the current status: OFFLINE, SYNCING, READY, ERROR).
+  - `micros3_writes_blocked` — Whether writes are blocked by sync lease (1=blocked).
+  - `micros3_active_writes` — Number of in-flight write transactions.
+  - `micros3_replication_prepare_total{result}` — 2PC prepare attempts (result=success/fail).
+  - `micros3_replication_commit_total{result}` — 2PC commit attempts (result=success/fail).
+  - `micros3_replication_abort_total{result}` — 2PC aborts (result=prepare_failed/local_commit_failed).
+  - `micros3_sync_lease_active` — Whether a sync lease is currently active.
+  - `micros3_proxy_requests_total{method}` — Requests proxied to leader.
+  - `micros3_multipart_uploads_active` — Number of active multipart uploads.
 
 Retrieve metrics using curl:
 ```bash

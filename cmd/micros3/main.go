@@ -165,13 +165,11 @@ func main() {
 				txID := entry.Name()
 				tx, err := storageRepo.GetTransaction(txID)
 				if err != nil {
-					// If tx.json cannot be read, it might be corrupt or incomplete; abort to clean up
 					logger.Warn("Corrupt staging transaction found, aborting", zap.String("txID", txID), zap.Error(err))
 					_ = storageRepo.AbortTransaction(txID)
 					continue
 				}
 
-				// If transaction is prepared and older than 2 minutes, abort it
 				if tx.State == "PREPARED" && time.Since(tx.CreatedAt) > 2*time.Minute {
 					logger.Info("Aborting expired/dangling prepared transaction (coordinator timeout)",
 						zap.String("txID", txID),
@@ -210,7 +208,6 @@ func main() {
 
 				mPath := filepath.Join(metaPath, bucket, key+".json")
 				if _, err := os.Stat(mPath); os.IsNotExist(err) {
-					// Safe window of 5 minutes to avoid active staging/rename operations
 					if time.Since(info.ModTime()) > 5*time.Minute {
 						logger.Warn("Found orphaned S3 data file without metadata, deleting",
 							zap.String("bucket", bucket),
@@ -220,7 +217,6 @@ func main() {
 						)
 						_ = os.Remove(path)
 
-						// Clean up empty directories upwards
 						dir := filepath.Dir(path)
 						bucketDir := filepath.Join(dataPath, bucket)
 						for dir != bucketDir && dir != dataPath && len(dir) > len(bucketDir) {
@@ -238,7 +234,6 @@ func main() {
 			})
 		}
 
-		// Run once immediately on startup
 		runCleanup()
 		runOrphanCleanup()
 
@@ -250,6 +245,20 @@ func main() {
 				logger.Debug("Running expired prepared transactions cleanup...")
 				runCleanup()
 				runOrphanCleanup()
+			}
+		}
+	}()
+
+	go func() {
+		svc.UpdateStorageMetrics()
+		svc.UpdateClusterMetrics()
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				svc.UpdateStorageMetrics()
+				svc.UpdateClusterMetrics()
 			}
 		}
 	}()

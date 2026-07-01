@@ -15,6 +15,8 @@ import (
 
 	"github.com/paucpauc/micros3/internal/application/s3app"
 	"github.com/paucpauc/micros3/internal/domain/s3"
+	"github.com/paucpauc/micros3/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -91,7 +93,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/metrics" {
-		h.handleMetrics(w, r)
+		promhttp.Handler().ServeHTTP(w, r)
 		return
 	}
 
@@ -123,6 +125,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				zap.String("path", r.URL.Path),
 				zap.String("request_id", reqID),
 			)
+			metrics.ProxyRequestsTotal.WithLabelValues(r.Method).Inc()
 			h.ProxyToLeader(rw, r)
 			h.logAccess(rw, r, accessKey, start)
 			return
@@ -176,6 +179,18 @@ func (h *Handler) logAccess(rw *responseWriter, r *http.Request, accessKey strin
 		key = parts[1]
 	}
 
+	duration := time.Since(start).Seconds()
+	metrics.RequestsTotal.WithLabelValues(r.Method, bucket, strconv.Itoa(rw.status)).Inc()
+	metrics.RequestDuration.WithLabelValues(r.Method, bucket).Observe(duration)
+
+	isWrite := r.Method == http.MethodPut || r.Method == http.MethodPost
+	if isWrite && rw.status < 400 {
+		metrics.BytesWritten.WithLabelValues(r.Method, bucket).Add(float64(rw.size))
+	}
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && rw.status < 400 {
+		metrics.BytesRead.WithLabelValues(r.Method, bucket).Add(float64(rw.size))
+	}
+
 	h.logger.Info("S3 Access",
 		zap.String("client_ip", clientIP(r)),
 		zap.String("method", r.Method),
@@ -185,7 +200,7 @@ func (h *Handler) logAccess(rw *responseWriter, r *http.Request, accessKey strin
 		zap.Int("size", rw.size),
 		zap.String("access_key", accessKey),
 		zap.String("request_id", r.Header.Get("X-Amz-Request-Id")),
-		zap.String("duration", fmt.Sprintf("%.6f", time.Since(start).Seconds())),
+		zap.String("duration", fmt.Sprintf("%.6f", duration)),
 	)
 }
 
@@ -702,40 +717,4 @@ func (h *Handler) handleLiveness(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"OK"}`))
-}
-
-func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	objectsCount := int64(0)
-	storageUsed := int64(0)
-	buckets, err := h.service.ListBuckets()
-	if err == nil {
-		for _, b := range buckets {
-			res, err := h.service.ListObjectsV2(b, "", "", "", 100000)
-			if err == nil {
-				for _, c := range res.Contents {
-					objectsCount++
-					storageUsed += c.Size
-				}
-			}
-		}
-	}
-
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	
-	isLeaderVal := 0
-	if h.cluster.IsLeader() {
-		isLeaderVal = 1
-	}
-
-	_, _ = fmt.Fprintf(w, `# HELP micros3_objects_total Total number of S3 objects
-# TYPE micros3_objects_total gauge
-micros3_objects_total %d
-# HELP micros3_storage_used_bytes Total storage used in bytes
-# TYPE micros3_storage_used_bytes gauge
-micros3_storage_used_bytes %d
-# HELP micros3_cluster_leader Status if this node is the leader (1) or follower (0)
-# TYPE micros3_cluster_leader gauge
-micros3_cluster_leader %d
-`, objectsCount, storageUsed, isLeaderVal)
 }

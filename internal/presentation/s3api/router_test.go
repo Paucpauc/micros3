@@ -224,8 +224,11 @@ func TestS3APIRouting(t *testing.T) {
 		t.Errorf("expected 200 metrics, got %d", rec.Code)
 	}
 	metricsStr := rec.Body.String()
-	if !strings.Contains(metricsStr, "micros3_objects_total") || !strings.Contains(metricsStr, "micros3_storage_used_bytes") {
-		t.Errorf("unexpected metrics format:\n%s", metricsStr)
+	if !strings.Contains(metricsStr, "micros3_requests_total") {
+		t.Errorf("expected micros3_requests_total in metrics, got:\n%s", metricsStr)
+	}
+	if !strings.Contains(metricsStr, "micros3_cluster_role") {
+		t.Errorf("expected micros3_cluster_role in metrics, got:\n%s", metricsStr)
 	}
 }
 
