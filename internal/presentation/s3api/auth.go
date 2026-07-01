@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -152,6 +153,7 @@ func (av *AuthValidator) ValidateRequest(r *http.Request) (string, error) {
 		zap.String("stringToSign", stringToSign),
 		zap.String("expectedSignature", expectedSignature),
 		zap.String("gotSignature", signatureHex),
+		zap.String("r.Host", r.Host),
 	)
 
 	if !hmac.Equal([]byte(signatureHex), []byte(expectedSignature)) {
@@ -196,9 +198,11 @@ func buildCanonicalRequest(r *http.Request, signedHeadersStr string, hashedPaylo
 	var canonicalHeaders strings.Builder
 	for _, hName := range signedHeaders {
 		hVal := r.Header.Get(hName)
-		// For Host header, if empty fallback to r.Host
-		if hName == "host" && hVal == "" {
-			hVal = r.Host
+		if hName == "host" {
+			if hVal == "" {
+				hVal = r.Host
+			}
+			hVal = stripStandardPort(hVal)
 		}
 		// Trim spaces and clean value
 		hVal = strings.TrimSpace(hVal)
@@ -221,6 +225,17 @@ func buildCanonicalRequest(r *http.Request, signedHeadersStr string, hashedPaylo
 	)
 
 	return canonicalRequest, nil
+}
+
+func stripStandardPort(hostVal string) string {
+	h, p, err := net.SplitHostPort(hostVal)
+	if err != nil {
+		return hostVal
+	}
+	if p == "80" || p == "443" {
+		return h
+	}
+	return hostVal
 }
 
 func getCanonicalURI(path string) string {
