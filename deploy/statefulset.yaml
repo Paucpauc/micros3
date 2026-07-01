@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: micros3
+spec:
+  serviceName: micros3
+  replicas: 3
+  selector:
+    matchLabels:
+      app: micros3
+  template:
+    metadata:
+      labels:
+        app: micros3
+    spec:
+      serviceAccountName: micros3-sa
+      containers:
+        - name: micros3
+          image: micros3:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MICROS3_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            - containerPort: 30010
+              name: s3
+            - containerPort: 9001
+              name: internal
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/micros3
+            - name: data-volume
+              mountPath: /data
+          args: ["-config", "/etc/micros3/config.yaml"]
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: s3
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: s3
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 2
+
+      volumes:
+        - name: config-volume
+          configMap:
+            name: micros3-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data-volume
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 1Gi
+          limits:
+            storage: 1Gi
+

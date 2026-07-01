@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: micros3-config
+data:
+  config.yaml: |
+    node:
+      id: "placeholder" # overridden by MICROS3_NODE_ID environment variable
+    server:
+      s3_listen: ":30010"
+      internal_listen: ":9001"
+    storage:
+      root: "/data"
+    cluster:
+      mode: "k8s"
+      token: "secret-cluster-token"
+      k8s:
+        namespace: "default"
+        lease_name: "micros3-leader-lease"
+        lease_duration: "15s"
+        renew_deadline: "10s"
+        retry_period: "2s"
+        internal_port: 9001
+    s3:
+      credentials:
+        - access_key: "admin"
+          secret_key: "supersecret"
+      region: "us-east-1"
+    health:
+      interval: "5s"
+      timeout: "2s"
+      max_failures: 3
+    sync:
+      block_writes: true # Block RW requests if other node sync data
+      write_block_behavior: "wait" # "reject" (503 ServiceUnavailable) or "wait" (blocks request until sync done)
+      allow_local_reads: true # Do not proxing RO requests
+    log:
+      level: "debug"
+      format: "text"
