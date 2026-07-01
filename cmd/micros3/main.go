@@ -16,6 +16,7 @@ import (
 	"github.com/paucpauc/micros3/internal/config"
 	"github.com/paucpauc/micros3/internal/infrastructure/storage/fs"
 	"github.com/paucpauc/micros3/internal/internal_api"
+	"github.com/paucpauc/micros3/internal/metrics"
 	"github.com/paucpauc/micros3/internal/presentation/s3api"
 	"github.com/paucpauc/micros3/internal/replication"
 	"go.uber.org/zap"
@@ -112,6 +113,35 @@ func main() {
 
 	internalHandler := internal_api.NewHandler(storageRepo, svc, clusterMgr, s3Handler, cfg.Cluster.Token, logger)
 	internalSrv := internal_api.NewServer(cfg.Server.InternalListen, internalHandler, logger)
+
+	// background deduplication worker
+	if cfg.Storage.Dedup.Enabled {
+		go func() {
+			ticker := time.NewTicker(cfg.Storage.Dedup.Interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					logger.Debug("Running background deduplication...")
+					metrics.DedupRunsTotal.Inc()
+					linked, err := storageRepo.Deduplicate()
+					if err != nil {
+						logger.Warn("Deduplication failed", zap.Error(err))
+						continue
+					}
+					metrics.DedupLinksTotal.Add(float64(linked))
+					if linked > 0 {
+						logger.Info("Deduplication completed",
+							zap.Int("files_linked", linked),
+						)
+					}
+				}
+			}
+		}()
+		logger.Info("Background deduplication enabled",
+			zap.String("interval", cfg.Storage.Dedup.IntervalStr),
+		)
+	}
 
 	// expired multipart upload cleanup worker
 	go func() {

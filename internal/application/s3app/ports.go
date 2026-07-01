@@ -37,6 +37,9 @@ type StorageRepository interface {
 	AbortMultipartUpload(bucket, uploadID string) error
 	GetMultipartUpload(bucket, uploadID string) (s3.MultipartUpload, error)
 	ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error)
+
+	// Deduplication
+	Deduplicate() (int, error)
 }
 
 // Replicator defines the interface for replicating transactions to other nodes
