@@ -130,6 +130,22 @@ func (av *AuthValidator) ValidateRequest(r *http.Request) (string, error) {
 		return "", fmt.Errorf("failed to build canonical request: %w", err)
 	}
 
+	loweredSigned := strings.Split(strings.ToLower(signedHeadersStr), ";")
+	sort.Strings(loweredSigned)
+	var headerVals []string
+	for _, hName := range loweredSigned {
+		hVal := r.Header.Get(hName)
+		if hName == "host" {
+			if hVal == "" {
+				hVal = r.Host
+			}
+			hVal = stripStandardPort(hVal)
+		}
+		allVals := r.Header.Values(hName)
+		headerVals = append(headerVals, fmt.Sprintf("%s=%q (all: %v)", hName, hVal, allVals))
+	}
+	av.logger.Debug("SigV4 signed header values", zap.Strings("headers", headerVals))
+
 	// 6. Build String to Sign
 	scope := fmt.Sprintf("%s/%s/s3/aws4_request", dateStr, regionStr)
 	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
@@ -143,6 +159,7 @@ func (av *AuthValidator) ValidateRequest(r *http.Request) (string, error) {
 
 	av.logger.Debug("SigV4 debug",
 		zap.String("accessKey", accessKey),
+		zap.String("secretKey", secretKey),
 		zap.String("dateStr", dateStr),
 		zap.String("regionStr", regionStr),
 		zap.String("amzDate", amzDate),
