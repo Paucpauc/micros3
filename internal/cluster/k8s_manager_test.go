@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -90,6 +92,17 @@ func TestK8sClusterManagerLeaderElection(t *testing.T) {
 	}))
 	defer k8sServer.Close()
 
+	// Create a temporary namespace file to mock the downward API
+	tmpDir := t.TempDir()
+	nsDir := filepath.Join(tmpDir, "serviceaccount")
+	if err := os.MkdirAll(nsDir, 0755); err != nil {
+		t.Fatalf("failed to create namespace dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nsDir, "namespace"), []byte("test-ns"), 0644); err != nil {
+		t.Fatalf("failed to write namespace file: %v", err)
+	}
+	namespaceFilePath = filepath.Join(nsDir, "namespace")
+
 	// Config pointing to mock API server
 	t.Setenv("MICROS3_K8S_SERVICE_NAME", "pod-1")
 	cfg := &config.Config{
@@ -99,7 +112,6 @@ func TestK8sClusterManagerLeaderElection(t *testing.T) {
 		Cluster: config.ClusterConfig{
 			Mode: "k8s",
 			K8s: config.K8sConfig{
-				Namespace:     "test-ns",
 				LeaseName:     "test-lease",
 				LeaseDuration: 15 * time.Second,
 				RetryPeriod:   50 * time.Millisecond,

@@ -25,7 +25,6 @@ type StorageConfig struct {
 }
 
 type K8sConfig struct {
-	Namespace     string        `yaml:"namespace"`
 	LeaseName     string        `yaml:"lease_name"`
 	LeaseDuration time.Duration `yaml:"-"`
 	RenewDeadline time.Duration `yaml:"-"`
@@ -226,9 +225,6 @@ func (c *Config) OverrideWithEnv() {
 	}
 	if val := os.Getenv("MICROS3_CLUSTER_TOKEN"); val != "" {
 		c.Cluster.Token = val
-	}
-	if val := os.Getenv("MICROS3_CLUSTER_K8S_NAMESPACE"); val != "" {
-		c.Cluster.K8s.Namespace = val
 	}
 	if val := os.Getenv("MICROS3_CLUSTER_K8S_LEASE_NAME"); val != "" {
 		c.Cluster.K8s.LeaseName = val

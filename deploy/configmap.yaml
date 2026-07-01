@@ -15,7 +15,6 @@ data:
       mode: "k8s"
       token: "secret-cluster-token"
       k8s:
-        namespace: "default"
         lease_name: "micros3-leader-lease"
         lease_duration: "15s"
         renew_deadline: "10s"

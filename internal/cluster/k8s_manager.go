@@ -22,6 +22,8 @@ import (
 
 var _ s3app.ClusterManager = (*K8sClusterManager)(nil)
 
+var namespaceFilePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
 type MicroTime time.Time
 
 func (t MicroTime) MarshalJSON() ([]byte, error) {
@@ -110,15 +112,11 @@ func NewK8sClusterManager(
 	client *internal_api.Client,
 	logger *zap.Logger,
 ) (*K8sClusterManager, error) {
-	// Discover K8s Namespace
-	ns := cfg.Cluster.K8s.Namespace
-	if ns == "" {
-		nsBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-		if err == nil {
-			ns = string(bytes.TrimSpace(nsBytes))
-		} else {
-			ns = "default"
-		}
+	// Discover K8s Namespace from downward API
+	nsBytes, err := os.ReadFile(namespaceFilePath)
+	ns := "default"
+	if err == nil {
+		ns = string(bytes.TrimSpace(nsBytes))
 	}
 
 	// Read K8s Service Account Token
