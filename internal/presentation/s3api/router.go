@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -16,6 +17,49 @@ import (
 	"github.com/paucpauc/micros3/internal/domain/s3"
 	"go.uber.org/zap"
 )
+
+type responseWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+	size        int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	if rw.wroteHeader {
+		return
+	}
+	rw.status = code
+	rw.wroteHeader = true
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if !rw.wroteHeader {
+		rw.WriteHeader(http.StatusOK)
+	}
+	n, err := rw.ResponseWriter.Write(b)
+	rw.size += n
+	return n, err
+}
+
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.Index(xff, ","); idx >= 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
 
 type Handler struct {
 	service         *s3app.Service
@@ -51,25 +95,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate unique request ID
+	rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+
+	start := time.Now()
+
 	reqID := r.Header.Get("X-Amz-Request-Id")
 	if reqID == "" {
 		reqID = fmt.Sprintf("req-%d", time.Now().UnixNano())
 		r.Header.Set("X-Amz-Request-Id", reqID)
 	}
 
-	// Inject request ID into request context
 	ctx := context.WithValue(r.Context(), s3.RequestIDKey, reqID)
 	r = r.WithContext(ctx)
 
-	h.logger.Debug("S3 Request received",
-		zap.String("method", r.Method),
-		zap.String("path", r.URL.Path),
-		zap.String("query", r.URL.RawQuery),
-		zap.String("request_id", reqID),
-	)
+	var accessKey string
 
-	// 1. Check if we are the leader
 	if !h.cluster.IsLeader() {
 		isRead := r.Method == http.MethodGet || r.Method == http.MethodHead
 		if h.allowLocalReads && h.cluster.Status() == "READY" && isRead {
@@ -83,29 +123,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				zap.String("path", r.URL.Path),
 				zap.String("request_id", reqID),
 			)
-			h.ProxyToLeader(w, r)
+			h.ProxyToLeader(rw, r)
+			h.logAccess(rw, r, accessKey, start)
 			return
 		}
 	}
 
-	// 2. Authenticate using AWS Signature V4 (if credentials are set)
 	if h.auth != nil {
-		_, err := h.auth.ValidateRequest(r)
+		ak, err := h.auth.ValidateRequest(r)
 		if err != nil {
 			h.logger.Warn("S3 Signature V4 authentication failed", zap.Error(err))
-			WriteError(w, r, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
+			WriteError(rw, r, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
+			h.logAccess(rw, r, accessKey, start)
 			return
 		}
+		accessKey = ak
 	}
 
-	// 3. Dispatch path-style routing
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if path == "" {
 		if r.Method == http.MethodGet {
-			h.handleListBuckets(w, r)
+			h.handleListBuckets(rw, r)
 		} else {
-			WriteError(w, r, "InvalidArgument", "Invalid method on root", http.StatusBadRequest)
+			WriteError(rw, r, "InvalidArgument", "Invalid method on root", http.StatusBadRequest)
 		}
+		h.logAccess(rw, r, accessKey, start)
 		return
 	}
 
@@ -116,12 +158,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		key = parts[1]
 	}
 
-	// Route based on path depth
 	if key == "" {
-		h.handleBucketRequest(w, r, bucket)
+		h.handleBucketRequest(rw, r, bucket)
 	} else {
-		h.handleObjectRequest(w, r, bucket, key)
+		h.handleObjectRequest(rw, r, bucket, key)
 	}
+
+	h.logAccess(rw, r, accessKey, start)
+}
+
+func (h *Handler) logAccess(rw *responseWriter, r *http.Request, accessKey string, start time.Time) {
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	parts := strings.SplitN(path, "/", 2)
+	bucket := parts[0]
+	var key string
+	if len(parts) > 1 {
+		key = parts[1]
+	}
+
+	h.logger.Info("S3 Access",
+		zap.String("client_ip", clientIP(r)),
+		zap.String("method", r.Method),
+		zap.String("bucket", bucket),
+		zap.String("key", key),
+		zap.Int("status", rw.status),
+		zap.Int("size", rw.size),
+		zap.String("access_key", accessKey),
+		zap.String("request_id", r.Header.Get("X-Amz-Request-Id")),
+		zap.Duration("duration", time.Since(start)),
+	)
 }
 
 func (h *Handler) handleBucketRequest(w http.ResponseWriter, r *http.Request, bucket string) {
