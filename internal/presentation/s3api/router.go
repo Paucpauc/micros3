@@ -344,17 +344,6 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request, bucket
 		}
 	}
 
-	// Check if bucket exists
-	exists, err := h.service.HasBucket(bucket)
-	if err != nil {
-		MapErrorToS3(w, r, err)
-		return
-	}
-	if !exists {
-		WriteError(w, r, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
-		return
-	}
-
 	// Parse custom metadata
 	userMeta := make(map[string]string)
 	for k, v := range r.Header {

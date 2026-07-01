@@ -174,6 +174,18 @@ func (s *Service) HasBucket(bucket string) (bool, error) {
 	return s.storage.HasBucket(bucket)
 }
 
+func (s *Service) EnsureBucket(bucket string) error {
+	exists, err := s.storage.HasBucket(bucket)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	s.logger.Info("Auto-creating bucket on write", zap.String("bucket", bucket))
+	return s.storage.CreateBucket(bucket)
+}
+
 func (s *Service) ListBuckets() ([]string, error) {
 	return s.storage.ListBuckets()
 }
@@ -182,6 +194,10 @@ func (s *Service) ListBuckets() ([]string, error) {
 
 func (s *Service) PutObject(ctx context.Context, bucket, key string, r io.Reader, size int64, meta s3.ObjectMeta) (s3.ObjectMeta, error) {
 	reqID := s3.GetRequestID(ctx)
+
+	if err := s.EnsureBucket(bucket); err != nil {
+		return s3.ObjectMeta{}, err
+	}
 
 	s.syncMutex.Lock()
 	for s.isWritesBlockedLocked() {
@@ -541,6 +557,9 @@ func (s *Service) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket, 
 
 func (s *Service) CreateMultipartUpload(bucket, key string) (string, error) {
 	s.logger.Info("CreateMultipartUpload", zap.String("bucket", bucket), zap.String("key", key))
+	if err := s.EnsureBucket(bucket); err != nil {
+		return "", err
+	}
 	return s.storage.CreateMultipartUpload(bucket, key)
 }
 
