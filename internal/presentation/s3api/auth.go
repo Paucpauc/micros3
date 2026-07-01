@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/paucpauc/micros3/internal/config"
+	"go.uber.org/zap"
 )
 
 var authHeaderRegex = regexp.MustCompile(`AWS4-HMAC-SHA256\s+Credential=([^/]+)/([^/]+)/([^/]+)/s3/aws4_request,\s*SignedHeaders=([^,]+),\s*Signature=([0-9a-fA-F]+)`)
@@ -23,11 +24,13 @@ var authHeaderRegex = regexp.MustCompile(`AWS4-HMAC-SHA256\s+Credential=([^/]+)/
 // AuthValidator validates S3 AWS Signature V4 requests
 type AuthValidator struct {
 	credentials []config.Credentials
+	logger      *zap.Logger
 }
 
-func NewAuthValidator(credentials []config.Credentials) *AuthValidator {
+func NewAuthValidator(credentials []config.Credentials, logger *zap.Logger) *AuthValidator {
 	return &AuthValidator{
 		credentials: credentials,
+		logger:      logger,
 	}
 }
 
@@ -136,6 +139,20 @@ func (av *AuthValidator) ValidateRequest(r *http.Request) (string, error) {
 
 	// 7. Calculate Signature
 	expectedSignature := calculateSignature(secretKey, dateStr, regionStr, stringToSign)
+
+	av.logger.Debug("SigV4 debug",
+		zap.String("accessKey", accessKey),
+		zap.String("dateStr", dateStr),
+		zap.String("regionStr", regionStr),
+		zap.String("amzDate", amzDate),
+		zap.String("scope", scope),
+		zap.String("signedHeaders", signedHeadersStr),
+		zap.String("hashedPayload", hashedPayload),
+		zap.String("canonicalRequest", canonicalRequest),
+		zap.String("stringToSign", stringToSign),
+		zap.String("expectedSignature", expectedSignature),
+		zap.String("gotSignature", signatureHex),
+	)
 
 	if !hmac.Equal([]byte(signatureHex), []byte(expectedSignature)) {
 		return "", errors.New("signature mismatch")
