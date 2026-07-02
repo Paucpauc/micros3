@@ -4,12 +4,18 @@ MicroS3 is a lightweight, high-performance distributed S3-compatible object stor
 
 ## Core Features
 * **S3-Compatible API**: Supports operations like PutObject, GetObject, DeleteObject, Multipart Uploads, CopyObject, ListObjectsV2, and more.
+* **Auto Bucket Creation**: Buckets are automatically created on the first write (PutObject, CopyObject, multipart upload), matching the behavior of most S3-compatible storages.
+* **Proper S3 Error Codes**: Returns AWS-compliant error codes — `NoSuchBucket` (404) for operations on missing buckets, `NoSuchKey` (404) for missing objects.
 * **Strong Replication (2PC)**: Two-phase commit ensures data consistency across all active replica nodes.
 * **Automatic Recovery**: Reconnected or offline replicas transition to `SYNCING` state upon startup, block incoming client writes on the leader, pull missing deltas via CRC32 validation, and transition back to `READY`.
+* **Background Deduplication**: Optional hardlink-based deduplication reduces storage for identical objects without changing S3 behavior.
 * **Kubernetes-Native**:
   - Leader election via the standard **K8s Lease API**.
   - Node discovery via the **Endpoints API** (no external systems like Consul or etcd needed).
-* **Monitoring**: Built-in `/health` (JSON) and `/metrics` (Prometheus text format) endpoints.
+  - Pod namespace auto-detected from Downward API (no manual namespace config).
+  - **PodMonitor** manifest included for Prometheus Operator scraping.
+* **Monitoring**: Built-in `/health` (JSON), `/liveness` (200 OK), and `/metrics` (Prometheus text format) endpoints.
+* **S3 Access Logging**: Every S3 request is logged at info level with client IP, method, bucket, key, status code, response size, access key, request ID, and duration.
 
 ---
 
@@ -33,6 +39,9 @@ server:
   internal_listen: ":9001"
 storage:
   root: "./storage-data"
+  dedup:
+    enabled: false
+    interval: "1h"
 cluster:
   mode: "single" # Single-node mode
 s3:
@@ -192,6 +201,7 @@ Each pod discovers its identity using the `MICROS3_NODE_ID` environment variable
 
 Each MicroS3 node exposes endpoints on its main S3 API port:
 * **`/health`**: Returns `{"status":"OK"}`. Used for K8s `livenessProbe` and `readinessProbe`.
+* **`/liveness`**: Returns HTTP 200. Lightweight liveness check.
 * **`/metrics`**: Exports Prometheus-format metrics:
   - `micros3_requests_total{method,bucket,code}` — Total S3 API request count by HTTP method, bucket, and status code.
   - `micros3_request_duration_seconds{method,bucket}` — Histogram of S3 API request durations.
@@ -210,6 +220,11 @@ Each MicroS3 node exposes endpoints on its main S3 API port:
   - `micros3_sync_lease_active` — Whether a sync lease is currently active.
   - `micros3_proxy_requests_total{method}` — Requests proxied to leader.
   - `micros3_multipart_uploads_active` — Number of active multipart uploads.
+  - `micros3_dedup_total{result}` — Deduplication cycle results (result=success/error).
+  - `micros3_dedup_links_created` — Total hardlinks created by deduplication.
+  - `micros3_dedup_space_saved_bytes` — Storage space saved by deduplication (in bytes).
+
+A `PodMonitor` manifest for Prometheus Operator is included in `deploy/` (`deploy/podmonitor.yaml`).
 
 Retrieve metrics using curl:
 ```bash
