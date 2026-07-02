@@ -1,2 +1,16 @@
 apiVersion: v1
-entries: {}
+entries:
+  micros3:
+  - apiVersion: v2
+    appVersion: latest
+    created: "2026-07-02T14:26:23.458417609Z"
+    description: A lightweight, high-performance distributed S3-compatible object
+      storage server
+    digest: 18615a19fbef8b9865a8b6ebcd7390ddd1e444066a4338b1a84e5909e9c48cb1
+    home: https://github.com/paucpauc/micros3
+    name: micros3
+    type: application
+    urls:
+    - https://github.com/Paucpauc/micros3/releases/download/micros3-0.1.0/micros3-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-07-02T14:26:23.458423841Z"
