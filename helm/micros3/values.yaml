@@ -72,7 +72,7 @@ service:
 persistence:
   enabled: true
   accessMode: ReadWriteOnce
-  size: 1Gi
+  size: 2Gi
   storageClassName: ""
 
 podMonitor:
