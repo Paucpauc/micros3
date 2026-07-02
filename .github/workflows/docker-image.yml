@@ -51,9 +51,11 @@ jobs:
 
       - name: Commit and push Chart update
         run: |
+          git checkout main
+          git pull --rebase origin main
           git add helm/micros3/Chart.yaml
           git commit -m "chore: update chart to ${{ steps.meta.outputs.VERSION }}"
-          git push origin HEAD:main
+          git push origin main
 
       - name: Run chart-releaser
         uses: helm/chart-releaser-action@v1.6.0
