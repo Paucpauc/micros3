@@ -39,7 +39,7 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/micros3:${{ steps.meta.outputs.VERSION }}
             ${{ secrets.DOCKERHUB_USERNAME }}/micros3:latest
 
-      - name: Update Chart appVersion
+      - name: Update Chart appVersion and version
         run: |
           sed -i 's/^appVersion:.*/appVersion: "'"${{ steps.meta.outputs.VERSION }}"'"/' helm/micros3/Chart.yaml
           sed -i 's/^version:.*/version: "'"${{ steps.meta.outputs.VERSION }}"'"/' helm/micros3/Chart.yaml
@@ -52,7 +52,7 @@ jobs:
       - name: Commit and push Chart update
         run: |
           git add helm/micros3/Chart.yaml
-          git commit -m "chore: update appVersion to ${{ steps.meta.outputs.VERSION }}"
+          git commit -m "chore: update chart to ${{ steps.meta.outputs.VERSION }}"
           git push origin HEAD:main
 
       - name: Run chart-releaser
