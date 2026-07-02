@@ -3,7 +3,9 @@ name: Release Helm Chart
 on:
   push:
     branches: [main]
-    paths: [helm/**]
+    paths:
+     - helm/**
+     - .github/workflows/release-chart.yml
 
 jobs:
   release:
