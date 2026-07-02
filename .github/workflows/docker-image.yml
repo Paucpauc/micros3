@@ -42,6 +42,7 @@ jobs:
       - name: Update Chart appVersion
         run: |
           sed -i 's/^appVersion:.*/appVersion: "'"${{ steps.meta.outputs.VERSION }}"'"/' helm/micros3/Chart.yaml
+          sed -i 's/^version:.*/version: "'"${{ steps.meta.outputs.VERSION }}"'"/' helm/micros3/Chart.yaml
 
       - name: Configure Git
         run: |
