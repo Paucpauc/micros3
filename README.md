@@ -150,10 +150,105 @@ Any S3 write requests (`PUT`/`DELETE`) sent to follower nodes (ports `9002` and 
 
 In Kubernetes, cluster nodes are deployed as a `StatefulSet`. Leader election is dynamically handled using the **Kubernetes Coordination Lease API**, while replica node discovery uses a headless Service and the **Endpoints API**.
 
+### Option A: Helm Chart (Recommended)
+
+Add the Helm repository:
+```bash
+helm repo add micros3 https://paucpauc.github.io/micros3
+helm repo update
+```
+
+Install with default values (3 replicas, K8s leader election):
+```bash
+helm install micros3 micros3/micros3
+```
+
+Customize values:
+```bash
+helm install micros3 micros3/micros3 \
+  --set replicaCount=5 \
+  --set image.repository=paucpauc/micros3 \
+  --set image.tag=latest \
+  --set config.s3.credentials[0].accessKey=admin \
+  --set config.s3.credentials[0].secretKey=supersecret \
+  --set config.cluster.token=my-cluster-token \
+  --set persistence.size=10Gi
+```
+
+Or use a custom values file:
+```bash
+helm install micros3 micros3/micros3 -f my-values.yaml
+```
+
+The full list of configurable values:
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `replicaCount` | Number of StatefulSet replicas | `3` |
+| `image.repository` | Container image repository | `micros3` |
+| `image.tag` | Container image tag | `latest` |
+| `image.pullPolicy` | Image pull policy | `IfNotPresent` |
+| `nameOverride` | Override chart name | `""` |
+| `fullnameOverride` | Override full release name | `""` |
+| `serviceAccount.create` | Create ServiceAccount | `true` |
+| `serviceAccount.name` | ServiceAccount name | `micros3-sa` |
+| `rbac.create` | Create Role and RoleBinding | `true` |
+| `config.node.id` | Node ID (overridden by Downward API) | `"placeholder"` |
+| `config.server.s3Listen` | S3 API listen address | `":9000"` |
+| `config.server.internalListen` | Internal replication listen address | `":9001"` |
+| `config.storage.root` | Data storage directory | `"/data"` |
+| `config.storage.dedup.enabled` | Enable deduplication | `false` |
+| `config.storage.dedup.interval` | Deduplication cycle interval | `"1h"` |
+| `config.cluster.mode` | Cluster mode (`k8s`/`static`/`single`) | `"k8s"` |
+| `config.cluster.token` | Shared cluster auth token | `"secret-cluster-token"` |
+| `config.cluster.k8s.leaseName` | K8s Lease name for leader election | `"micros3-leader-lease"` |
+| `config.cluster.k8s.leaseDuration` | Lease duration | `"15s"` |
+| `config.cluster.k8s.renewDeadline` | Lease renew deadline | `"10s"` |
+| `config.cluster.k8s.retryPeriod` | Lease retry period | `"2s"` |
+| `config.cluster.k8s.internalPort` | Internal port for K8s discovery | `9001` |
+| `config.s3.credentials` | List of S3 access/secret key pairs | see defaults |
+| `config.s3.region` | S3 region | `"us-east-1"` |
+| `config.health.interval` | Health check interval | `"5s"` |
+| `config.health.timeout` | Health check timeout | `"2s"` |
+| `config.health.maxFailures` | Max consecutive health check failures | `3` |
+| `config.sync.blockWrites` | Block writes during sync | `true` |
+| `config.sync.writeBlockBehavior` | Write block behavior (`wait`/`reject`) | `"wait"` |
+| `config.sync.allowLocalReads` | Allow local reads without proxying | `true` |
+| `config.log.level` | Log level (`debug`/`info`/`warn`/`error`) | `"debug"` |
+| `config.log.format` | Log format (`json`/`text`) | `"text"` |
+| `service.headless.s3.port` | Headless Service S3 port | `9000` |
+| `service.headless.internal.port` | Headless Service internal port | `9001` |
+| `service.leader.enabled` | Create leader NodePort Service | `true` |
+| `service.leader.type` | Leader Service type | `ClusterIP` |
+| `service.leader.s3.port` | Leader Service S3 port | `9000` |
+| `service.readOnly.enabled` | Create read-only Service | `true` |
+| `service.readOnly.type` | Read-only Service type | `ClusterIP` |
+| `service.readOnly.s3.port` | Read-only Service S3 port | `9000` |
+| `persistence.enabled` | Enable PVC for data | `true` |
+| `persistence.accessMode` | PVC access mode | `ReadWriteOnce` |
+| `persistence.size` | PVC size | `2Gi` |
+| `persistence.storageClassName` | Storage class name | `""` |
+| `podMonitor.enabled` | Create PodMonitor for Prometheus | `true` |
+| `podMonitor.interval` | Scrape interval | `30s` |
+| `podMonitor.scrapeTimeout` | Scrape timeout | `10s` |
+| `probe.readiness.httpGet.path` | Readiness probe path | `/health` |
+| `probe.readiness.initialDelaySeconds` | Readiness initial delay | `5` |
+| `probe.readiness.periodSeconds` | Readiness period | `15` |
+| `probe.readiness.timeoutSeconds` | Readiness timeout | `10` |
+| `probe.liveness.httpGet.path` | Liveness probe path | `/liveness` |
+| `probe.liveness.initialDelaySeconds` | Liveness initial delay | `10` |
+| `probe.liveness.periodSeconds` | Liveness period | `25` |
+| `probe.liveness.timeoutSeconds` | Liveness timeout | `15` |
+| `resources` | Container resource requests/limits | `{}` |
+| `nodeSelector` | Node selector | `{}` |
+| `tolerations` | Tolerations | `[]` |
+| `affinity` | Affinity rules | `{}` |
+
+### Option B: Raw Manifests
+
 All deployment manifests are located in the `deploy/` directory.
 
-### Step 1. Build the Docker Image
-Build the container image using Docker:
+#### Step 1. Build the Docker Image
 ```bash
 docker build -t micros3:latest .
 ```
@@ -163,21 +258,19 @@ docker build -t micros3:latest .
 > minikube image load micros3:latest
 > ```
 
-### Step 2. Deploy RBAC Roles
-Apply the required ServiceAccount, Role, and RoleBinding (enabling Lease coordination and Endpoints discovery):
+#### Step 2. Deploy RBAC Roles
 ```bash
 kubectl apply -f deploy/rbac.yaml
 ```
 
-### Step 3. Create the ConfigMap and Headless Service
+#### Step 3. Create the ConfigMap and Headless Service
 The headless Service provides stable network identities for StatefulSet replicas (e.g. `micros3-0.micros3.default.svc.cluster.local`).
 ```bash
 kubectl apply -f deploy/configmap.yaml
 kubectl apply -f deploy/service.yaml
 ```
 
-### Step 4. Deploy the StatefulSet
-Start the 3-replica StatefulSet:
+#### Step 4. Deploy the StatefulSet
 ```bash
 kubectl apply -f deploy/statefulset.yaml
 ```
@@ -218,7 +311,7 @@ Each MicroS3 node exposes endpoints on its main S3 API port:
   - `micros3_dedup_links_created` — Total hardlinks created by deduplication.
   - `micros3_dedup_space_saved_bytes` — Storage space saved by deduplication (in bytes).
 
-A `PodMonitor` manifest for Prometheus Operator is included in `deploy/` (`deploy/podmonitor.yaml`).
+A `PodMonitor` for Prometheus Operator is included in both the Helm chart and the raw manifests (`deploy/podmonitor.yaml`).
 
 Retrieve metrics using curl:
 ```bash
