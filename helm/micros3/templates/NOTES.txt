@@ -1,0 +1,14 @@
+MicroS3 has been deployed!
+
+S3 API is available through the leader service:
+  export NODE_IP=$(kubectl get nodes --output wide --no-headers | head -1 | awk '{print $6}')
+  aws --endpoint-url=http://$NODE_IP:{{ .Values.service.leader.s3.nodePort }} s3 ls
+
+Port-forward for direct access:
+  kubectl port-forward statefulset/{{ include "micros3.fullname" . }} 9000:{{ .Values.service.headless.s3.port }}
+
+Health check:
+  curl http://$NODE_IP:{{ .Values.service.leader.s3.nodePort }}/health
+
+Metrics:
+  curl http://$NODE_IP:{{ .Values.service.leader.s3.nodePort }}/metrics

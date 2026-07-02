@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "micros3.fullname" . }}-config
+  labels:
+    {{- include "micros3.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    node:
+      id: {{ .Values.config.node.id | quote }}
+    server:
+      s3_listen: {{ .Values.config.server.s3Listen | quote }}
+      internal_listen: {{ .Values.config.server.internalListen | quote }}
+    storage:
+      root: {{ .Values.config.storage.root | quote }}
+      dedup:
+        enabled: {{ .Values.config.storage.dedup.enabled }}
+        interval: {{ .Values.config.storage.dedup.interval | quote }}
+    cluster:
+      mode: {{ .Values.config.cluster.mode | quote }}
+      token: {{ .Values.config.cluster.token | quote }}
+      k8s:
+        lease_name: {{ .Values.config.cluster.k8s.leaseName | quote }}
+        lease_duration: {{ .Values.config.cluster.k8s.leaseDuration | quote }}
+        renew_deadline: {{ .Values.config.cluster.k8s.renewDeadline | quote }}
+        retry_period: {{ .Values.config.cluster.k8s.retryPeriod | quote }}
+        internal_port: {{ .Values.config.cluster.k8s.internalPort }}
+    s3:
+      credentials:
+        {{- range .Values.config.s3.credentials }}
+        - access_key: {{ .accessKey | quote }}
+          secret_key: {{ .secretKey | quote }}
+        {{- end }}
+      region: {{ .Values.config.s3.region | quote }}
+    health:
+      interval: {{ .Values.config.health.interval | quote }}
+      timeout: {{ .Values.config.health.timeout | quote }}
+      max_failures: {{ .Values.config.health.maxFailures }}
+    sync:
+      block_writes: {{ .Values.config.sync.blockWrites }}
+      write_block_behavior: {{ .Values.config.sync.writeBlockBehavior | quote }}
+      allow_local_reads: {{ .Values.config.sync.allowLocalReads }}
+    log:
+      level: {{ .Values.config.log.level | quote }}
+      format: {{ .Values.config.log.format | quote }}

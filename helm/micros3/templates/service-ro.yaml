@@ -1,0 +1,17 @@
+{{- if .Values.service.readOnly.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "micros3.fullname" . }}-ro
+  labels:
+    {{- include "micros3.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.readOnly.type }}
+  ports:
+    - name: s3
+      port: {{ .Values.service.readOnly.s3.port }}
+      targetPort: {{ .Values.service.readOnly.s3.port }}
+      nodePort: {{ .Values.service.readOnly.s3.nodePort }}
+  selector:
+    {{- include "micros3.selectorLabels" . | nindent 4 }}
+{{- end }}

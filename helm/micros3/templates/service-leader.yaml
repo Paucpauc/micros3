@@ -1,0 +1,18 @@
+{{- if .Values.service.leader.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "micros3.fullname" . }}-leader
+  labels:
+    {{- include "micros3.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.leader.type }}
+  ports:
+    - name: s3
+      port: {{ .Values.service.leader.s3.port }}
+      targetPort: {{ .Values.service.leader.s3.port }}
+      nodePort: {{ .Values.service.leader.s3.nodePort }}
+  selector:
+    {{- include "micros3.selectorLabels" . | nindent 4 }}
+    role: leader
+{{- end }}

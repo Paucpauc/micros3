@@ -1,0 +1,103 @@
+replicaCount: 3
+
+image:
+  repository: micros3
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: micros3-sa
+
+rbac:
+  create: true
+
+config:
+  node:
+    id: "placeholder"
+  server:
+    s3Listen: ":9000"
+    internalListen: ":9001"
+  storage:
+    root: "/data"
+    dedup:
+      enabled: false
+      interval: "1h"
+  cluster:
+    mode: "k8s"
+    token: "secret-cluster-token"
+    k8s:
+      leaseName: "micros3-leader-lease"
+      leaseDuration: "15s"
+      renewDeadline: "10s"
+      retryPeriod: "2s"
+      internalPort: 9001
+  s3:
+    credentials:
+      - accessKey: "admin"
+        secretKey: "supersecret"
+    region: "us-east-1"
+  health:
+    interval: "5s"
+    timeout: "2s"
+    maxFailures: 3
+  sync:
+    blockWrites: true
+    writeBlockBehavior: "wait"
+    allowLocalReads: true
+  log:
+    level: "debug"
+    format: "text"
+
+service:
+  headless:
+    s3:
+      port: 9000
+    internal:
+      port: 9001
+  leader:
+    enabled: true
+    type: ClusterIP
+    s3:
+      port: 9000
+  readOnly:
+    enabled: true
+    type: ClusterIP
+    s3:
+      port: 9000
+
+persistence:
+  enabled: true
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  storageClassName: ""
+
+podMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+
+probe:
+  readiness:
+    httpGet:
+      path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 15
+    timeoutSeconds: 10
+  liveness:
+    httpGet:
+      path: /liveness
+    initialDelaySeconds: 10
+    periodSeconds: 25
+    timeoutSeconds: 15
+
+resources: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

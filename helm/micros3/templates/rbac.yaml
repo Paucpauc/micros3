@@ -1,0 +1,32 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "micros3.fullname" . }}-role
+  labels:
+    {{- include "micros3.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "micros3.fullname" . }}-rolebinding
+  labels:
+    {{- include "micros3.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "micros3.serviceAccountName" . }}
+roleRef:
+  kind: Role
+  name: {{ include "micros3.fullname" . }}-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
