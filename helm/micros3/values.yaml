@@ -2,7 +2,7 @@ replicaCount: 3
 
 image:
   repository: micros3
-  tag: latest
+  tag: ""
   pullPolicy: IfNotPresent
 
 nameOverride: ""

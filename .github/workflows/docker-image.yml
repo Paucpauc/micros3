@@ -2,7 +2,10 @@ name: Build and Push to Docker Hub
 
 on:
   push:
-    branches: [ "main" ] # Сборка будет запускаться при пуше в ветку main
+    tags: [ "v*" ]
+
+permissions:
+  contents: write
 
 jobs:
   build-and-push:
@@ -10,6 +13,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -20,10 +25,38 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Extract version from tag
+        id: meta
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/micros3:latest
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/micros3:${{ steps.meta.outputs.VERSION }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/micros3:latest
+
+      - name: Update Chart appVersion
+        run: |
+          sed -i 's/^appVersion:.*/appVersion: "'"${{ steps.meta.outputs.VERSION }}"'"/' helm/micros3/Chart.yaml
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Commit and push Chart update
+        run: |
+          git add helm/micros3/Chart.yaml
+          git commit -m "chore: update appVersion to ${{ steps.meta.outputs.VERSION }}"
+          git push origin HEAD:main
+
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1.6.0
+        with:
+          charts_dir: helm
+        env:
+          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"

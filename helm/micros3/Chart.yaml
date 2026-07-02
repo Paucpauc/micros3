@@ -3,5 +3,5 @@ name: micros3
 description: A lightweight, high-performance distributed S3-compatible object storage server
 type: application
 version: 0.1.0
-appVersion: "latest"
+appVersion: "0.1.0"
 home: https://github.com/paucpauc/micros3
