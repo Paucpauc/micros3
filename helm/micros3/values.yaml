@@ -23,9 +23,6 @@ config:
     internalListen: ":9001"
   storage:
     root: "/data"
-    dedup:
-      enabled: false
-      interval: "1h"
   cluster:
     mode: "k8s"
     token: "secret-cluster-token"

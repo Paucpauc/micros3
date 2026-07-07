@@ -13,9 +13,6 @@ data:
       internal_listen: {{ .Values.config.server.internalListen | quote }}
     storage:
       root: {{ .Values.config.storage.root | quote }}
-      dedup:
-        enabled: {{ .Values.config.storage.dedup.enabled }}
-        interval: {{ .Values.config.storage.dedup.interval | quote }}
     cluster:
       mode: {{ .Values.config.cluster.mode | quote }}
       token: {{ .Values.config.cluster.token | quote }}

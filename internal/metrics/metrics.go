@@ -110,18 +110,6 @@ var (
 		Name:      "multipart_uploads_active",
 		Help:      "Number of active multipart uploads",
 	})
-
-	DedupLinksTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Namespace: namespace,
-		Name:      "dedup_links_total",
-		Help:      "Total number of hardlinks created by deduplication",
-	})
-
-	DedupRunsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Namespace: namespace,
-		Name:      "dedup_runs_total",
-		Help:      "Total number of deduplication runs",
-	})
 )
 
 func SetClusterStatus(status string) {

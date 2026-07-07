@@ -20,15 +20,8 @@ type ServerConfig struct {
 	InternalListen string `yaml:"internal_listen"`
 }
 
-type DedupConfig struct {
-	Enabled    bool          `yaml:"enabled"`
-	Interval   time.Duration `yaml:"-"`
-	IntervalStr string       `yaml:"interval"`
-}
-
 type StorageConfig struct {
-	Root  string     `yaml:"root"`
-	Dedup DedupConfig `yaml:"dedup"`
+	Root string `yaml:"root"`
 }
 
 type K8sConfig struct {
@@ -135,10 +128,6 @@ func DefaultConfig() *Config {
 		},
 		Storage: StorageConfig{
 			Root: "/data/micros3",
-			Dedup: DedupConfig{
-				Enabled:     false,
-				IntervalStr: "1h",
-			},
 		},
 		Cluster: ClusterConfig{
 			Mode: "single",
@@ -230,12 +219,6 @@ func (c *Config) OverrideWithEnv() {
 	}
 	if val := os.Getenv("MICROS3_STORAGE_ROOT"); val != "" {
 		c.Storage.Root = val
-	}
-	if val := os.Getenv("MICROS3_STORAGE_DEDUP_ENABLED"); val != "" {
-		c.Storage.Dedup.Enabled = strings.ToLower(val) == "true"
-	}
-	if val := os.Getenv("MICROS3_STORAGE_DEDUP_INTERVAL"); val != "" {
-		c.Storage.Dedup.IntervalStr = val
 	}
 	if val := os.Getenv("MICROS3_CLUSTER_MODE"); val != "" {
 		c.Cluster.Mode = val
@@ -331,9 +314,6 @@ func (c *Config) parseDurations() error {
 	}
 	if c.Health.Timeout, err = time.ParseDuration(c.Health.TimeoutStr); err != nil {
 		return fmt.Errorf("invalid health.timeout: %w", err)
-	}
-	if c.Storage.Dedup.Interval, err = time.ParseDuration(c.Storage.Dedup.IntervalStr); err != nil {
-		return fmt.Errorf("invalid storage.dedup.interval: %w", err)
 	}
 	return nil
 }

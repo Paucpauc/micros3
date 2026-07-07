@@ -286,7 +286,6 @@ func (r *FilesystemRepository) GetStagedObjectReader(txID string) (io.ReadCloser
 	return f, nil
 }
 
-
 // --- Object Operations ---
 
 func (r *FilesystemRepository) GetObject(bucket, key string) (io.ReadCloser, s3.ObjectMeta, error) {
@@ -525,20 +524,19 @@ func (r *FilesystemRepository) GetMultipartPartReader(bucket, uploadID string, p
 func (r *FilesystemRepository) DeleteMultipartPart(bucket, uploadID string, partNum int) error {
 	sessionDir := r.uploadSessionDir(bucket, uploadID)
 	partPath := filepath.Join(sessionDir, fmt.Sprintf("%05d", partNum))
-	
+
 	// Delete the part file
 	if err := os.Remove(partPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	
+
 	// Delete the part metadata file
 	if err := os.Remove(partPath + ".json"); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	
+
 	return nil
 }
-
 
 func (r *FilesystemRepository) GetMultipartParts(bucket, uploadID string) ([]s3.UploadPart, error) {
 	sessionDir := r.uploadSessionDir(bucket, uploadID)
@@ -604,159 +602,6 @@ func (r *FilesystemRepository) ListMultipartUploads(bucket string) ([]s3.Multipa
 		}
 	}
 	return uploads, nil
-}
-
-// --- Deduplication ---
-
-type dedupKey struct {
-	CRC32 uint32
-	Size  int64
-}
-
-func (r *FilesystemRepository) Deduplicate() (int, error) {
-	metaRoot := filepath.Join(r.root, "meta")
-	dataRoot := filepath.Join(r.root, "data")
-
-	type fileEntry struct {
-		bucket   string
-		key      string
-		dataPath string
-	}
-
-	groups := make(map[dedupKey][]fileEntry)
-
-	err := filepath.WalkDir(metaRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".json") {
-			return nil
-		}
-
-		rel, err := filepath.Rel(metaRoot, path)
-		if err != nil {
-			return nil
-		}
-
-		parts := strings.SplitN(rel, string(filepath.Separator), 2)
-		if len(parts) < 2 {
-			return nil
-		}
-		bucket := parts[0]
-		key := strings.TrimSuffix(parts[1], ".json")
-
-		var meta s3.ObjectMeta
-		if err := r.readJSON(path, &meta); err != nil {
-			return nil
-		}
-
-		if meta.ContentLength == 0 {
-			return nil
-		}
-
-		dk := dedupKey{CRC32: meta.CRC32, Size: meta.ContentLength}
-		dataPath := filepath.Join(dataRoot, bucket, key)
-		groups[dk] = append(groups[dk], fileEntry{
-			bucket:   bucket,
-			key:      key,
-			dataPath: dataPath,
-		})
-
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("failed to walk meta directory: %w", err)
-	}
-
-	linked := 0
-	minAge := 2 * time.Minute
-
-	for _, group := range groups {
-		if len(group) < 2 {
-			continue
-		}
-
-		var srcFd *os.File
-		var srcPath string
-		for _, fe := range group {
-			st, err := os.Stat(fe.dataPath)
-			if err != nil || !st.Mode().IsRegular() {
-				continue
-			}
-			if time.Since(st.ModTime()) < minAge {
-				continue
-			}
-			fd, err := os.Open(fe.dataPath)
-			if err != nil {
-				continue
-			}
-			st2, err := fd.Stat()
-			if err != nil || !sameFile(st, st2) {
-				fd.Close()
-				continue
-			}
-			srcFd = fd
-			srcPath = fe.dataPath
-			break
-		}
-		if srcFd == nil {
-			continue
-		}
-
-		srcInfo, _ := srcFd.Stat()
-
-		for _, fe := range group {
-			if fe.dataPath == srcPath {
-				continue
-			}
-
-			dstSt, err := os.Stat(fe.dataPath)
-			if err != nil {
-				continue
-			}
-			if time.Since(dstSt.ModTime()) < minAge {
-				continue
-			}
-			if sameFile(srcInfo, dstSt) {
-				continue
-			}
-
-			tmpLink := fe.dataPath + ".dedup_tmp"
-			linkPath := srcFd.Name()
-			if err := safeLink(linkPath, tmpLink, srcInfo); err != nil {
-				continue
-			}
-
-			if err := os.Rename(tmpLink, fe.dataPath); err != nil {
-				os.Remove(tmpLink)
-				continue
-			}
-
-			linked++
-		}
-
-		srcFd.Close()
-	}
-
-	return linked, nil
-}
-
-func safeLink(src string, dst string, expected os.FileInfo) error {
-	if err := os.Link(src, dst); err != nil {
-		return err
-	}
-	st, err := os.Stat(dst)
-	if err != nil {
-		os.Remove(dst)
-		return err
-	}
-	if !sameFile(expected, st) {
-		os.Remove(dst)
-		return fmt.Errorf("inode mismatch after link")
-	}
-	return nil
-}
-
-func sameFile(a, b os.FileInfo) bool {
-	return a.Sys() != nil && b.Sys() != nil &&
-		os.SameFile(a, b)
 }
 
 // --- Internal Helper Methods ---
