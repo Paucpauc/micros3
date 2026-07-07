@@ -604,6 +604,116 @@ func (r *FilesystemRepository) ListMultipartUploads(bucket string) ([]s3.Multipa
 	return uploads, nil
 }
 
+// --- Maintenance Operations ---
+
+var _ s3app.MaintenanceRepository = (*FilesystemRepository)(nil)
+
+// CleanupExpiredTransactions aborts prepared transactions older than maxAge.
+func (r *FilesystemRepository) CleanupExpiredTransactions(maxAge time.Duration) ([]s3.Transaction, error) {
+	stagingPath := filepath.Join(r.root, "staging")
+	entries, err := os.ReadDir(stagingPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var aborted []s3.Transaction
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		txID := entry.Name()
+		tx, err := r.GetTransaction(txID)
+		if err != nil {
+			// Corrupt staging transaction — abort it.
+			_ = r.AbortTransaction(txID)
+			continue
+		}
+
+		if tx.State == s3.TxPrepared && time.Since(tx.CreatedAt) > maxAge {
+			aborted = append(aborted, tx)
+			_ = r.AbortTransaction(txID)
+		}
+	}
+	return aborted, nil
+}
+
+// CleanupOrphanedObjects removes object data that has no corresponding metadata
+// and is older than minAge.
+func (r *FilesystemRepository) CleanupOrphanedObjects(minAge time.Duration) (int, error) {
+	dataPath := filepath.Join(r.root, "data")
+	metaPath := filepath.Join(r.root, "meta")
+
+	removed := 0
+	err := filepath.Walk(dataPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		rel, err := filepath.Rel(dataPath, path)
+		if err != nil {
+			return nil
+		}
+
+		parts := strings.SplitN(rel, string(filepath.Separator), 2)
+		if len(parts) < 2 {
+			return nil
+		}
+		bucket := parts[0]
+		key := parts[1]
+
+		mPath := filepath.Join(metaPath, bucket, key+".json")
+		if _, err := os.Stat(mPath); os.IsNotExist(err) {
+			if time.Since(info.ModTime()) > minAge {
+				_ = os.Remove(path)
+				removed++
+
+				dir := filepath.Dir(path)
+				bucketDir := filepath.Join(dataPath, bucket)
+				for dir != bucketDir && dir != dataPath && len(dir) > len(bucketDir) {
+					entries, err := os.ReadDir(dir)
+					if err == nil && len(entries) == 0 {
+						_ = os.Remove(dir)
+					} else {
+						break
+					}
+					dir = filepath.Dir(dir)
+				}
+			}
+		}
+		return nil
+	})
+	return removed, err
+}
+
+// CleanupExpiredMultipartUploads aborts multipart uploads older than maxAge.
+func (r *FilesystemRepository) CleanupExpiredMultipartUploads(maxAge time.Duration) ([]s3.MultipartUpload, error) {
+	buckets, err := r.ListBuckets()
+	if err != nil {
+		return nil, err
+	}
+
+	var aborted []s3.MultipartUpload
+	for _, b := range buckets {
+		uploads, err := r.ListMultipartUploads(b)
+		if err != nil {
+			continue
+		}
+		for _, up := range uploads {
+			if time.Since(up.Initiated) > maxAge {
+				aborted = append(aborted, up)
+				_ = r.AbortMultipartUpload(b, up.UploadID)
+			}
+		}
+	}
+	return aborted, nil
+}
+
 // --- Internal Helper Methods ---
 
 func (r *FilesystemRepository) isDirEmpty(name string) (bool, error) {

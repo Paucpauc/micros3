@@ -3,6 +3,7 @@ package s3app
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/paucpauc/micros3/internal/domain/s3"
 )
@@ -37,6 +38,36 @@ type StorageRepository interface {
 	AbortMultipartUpload(bucket, uploadID string) error
 	GetMultipartUpload(bucket, uploadID string) (s3.MultipartUpload, error)
 	ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error)
+}
+
+// MaintenanceRepository defines optional storage maintenance operations.
+// Implementations may support a subset of these methods; callers should use
+// a type assertion to check availability. This keeps storage-specific cleanup
+// logic out of the application layer and the composition root.
+type MaintenanceRepository interface {
+	// CleanupExpiredTransactions aborts prepared transactions older than maxAge.
+	CleanupExpiredTransactions(maxAge time.Duration) ([]s3.Transaction, error)
+	// CleanupOrphanedObjects removes object data that has no corresponding metadata
+	// and is older than minAge.
+	CleanupOrphanedObjects(minAge time.Duration) (int, error)
+	// CleanupExpiredMultipartUploads aborts multipart uploads older than maxAge.
+	CleanupExpiredMultipartUploads(maxAge time.Duration) ([]s3.MultipartUpload, error)
+}
+
+// MetricsRecorder abstracts the emission of operational metrics so that the
+// application layer does not depend on a specific metrics library (e.g. Prometheus).
+type MetricsRecorder interface {
+	SetBucketsTotal(count int)
+	SetObjectsTotal(bucket string, count int64)
+	SetStorageUsedBytes(bucket string, bytes int64)
+	SetClusterRole(isLeader bool)
+	SetClusterStatus(status string)
+	SetSyncLeaseActive(active bool)
+	SetWritesBlocked(blocked bool)
+	SetActiveWrites(count int)
+	IncReplicationPrepare(result string)
+	IncReplicationCommit(result string)
+	IncReplicationAbort(reason string)
 }
 
 // Replicator defines the interface for replicating transactions to other nodes

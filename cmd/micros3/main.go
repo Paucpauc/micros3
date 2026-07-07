@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +16,7 @@ import (
 	"github.com/paucpauc/micros3/internal/config"
 	"github.com/paucpauc/micros3/internal/infrastructure/storage/fs"
 	"github.com/paucpauc/micros3/internal/internal_api"
+	"github.com/paucpauc/micros3/internal/metrics"
 	"github.com/paucpauc/micros3/internal/presentation/s3api"
 	"github.com/paucpauc/micros3/internal/replication"
 	"go.uber.org/zap"
@@ -38,13 +39,13 @@ func main() {
 	logger := initLogger(cfg.Log.Level, cfg.Log.Format)
 	defer logger.Sync()
 
-	logger.Info("Initializing MicroS3 in standalone mode",
+	logger.Info("Initializing MicroS3",
 		zap.String("node_id", cfg.Node.ID),
-		zap.String("storage_root", cfg.Storage.Root),
+		zap.String("storage_type", cfg.Storage.Type),
 	)
 
-	// 3. Initialize storage
-	storageRepo, err := fs.NewFilesystemRepository(cfg.Storage.Root)
+	// 3. Initialize storage (selected by cfg.Storage.Type)
+	storageRepo, err := newStorageRepository(cfg)
 	if err != nil {
 		logger.Fatal("Failed to initialize storage repository", zap.Error(err))
 	}
@@ -89,7 +90,7 @@ func main() {
 	}
 
 	// 5. Initialize S3 Application Service
-	svc := s3app.NewService(storageRepo, replicator, clusterMgr, logger)
+	svc := s3app.NewService(storageRepo, replicator, clusterMgr, metrics.NewPrometheusRecorder(), logger)
 	svc.SetWriteBlockBehavior(cfg.Sync.WriteBlockBehavior)
 
 	// 6. Initialize Auth Validator (if credentials are set)
@@ -113,141 +114,72 @@ func main() {
 	internalHandler := internal_api.NewHandler(storageRepo, svc, clusterMgr, s3Handler, cfg.Cluster.Token, logger)
 	internalSrv := internal_api.NewServer(cfg.Server.InternalListen, internalHandler, logger)
 
-	// expired multipart upload cleanup worker
-	go func() {
-		ticker := time.NewTicker(cfg.Multipart.CleanupInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				logger.Debug("Running expired multipart uploads cleanup...")
-				buckets, err := storageRepo.ListBuckets()
-				if err != nil {
-					continue
-				}
-				for _, b := range buckets {
-					uploads, err := storageRepo.ListMultipartUploads(b)
+	// Background maintenance workers (only if the storage backend supports maintenance)
+	if maint, ok := storageRepo.(s3app.MaintenanceRepository); ok {
+		// expired multipart upload cleanup worker
+		go func() {
+			ticker := time.NewTicker(cfg.Multipart.CleanupInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					logger.Debug("Running expired multipart uploads cleanup...")
+					aborted, err := maint.CleanupExpiredMultipartUploads(cfg.Multipart.UploadExpiry)
 					if err != nil {
+						logger.Warn("Multipart upload cleanup failed", zap.Error(err))
 						continue
 					}
-					for _, up := range uploads {
-						if time.Since(up.Initiated) > cfg.Multipart.UploadExpiry {
-							logger.Info("Aborting expired multipart upload",
-								zap.String("bucket", b),
-								zap.String("key", up.Key),
-								zap.String("upload_id", up.UploadID),
-								zap.Time("initiated", up.Initiated),
-							)
-							_ = storageRepo.AbortMultipartUpload(b, up.UploadID)
-						}
+					for _, up := range aborted {
+						logger.Info("Aborted expired multipart upload",
+							zap.String("key", up.Key),
+							zap.String("upload_id", up.UploadID),
+							zap.Time("initiated", up.Initiated),
+						)
 					}
 				}
 			}
-		}
-	}()
+		}()
 
-	// 2PC Prepared Transaction Janitor
-	go func() {
-		runCleanup := func() {
-			stagingPath := filepath.Join(cfg.Storage.Root, "staging")
-			entries, err := os.ReadDir(stagingPath)
-			if err != nil {
-				if !os.IsNotExist(err) {
-					logger.Warn("Failed to read staging directory", zap.Error(err))
-				}
-				return
-			}
-
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				txID := entry.Name()
-				tx, err := storageRepo.GetTransaction(txID)
+		// 2PC Prepared Transaction Janitor + Orphan cleanup
+		go func() {
+			runJanitor := func() {
+				aborted, err := maint.CleanupExpiredTransactions(2 * time.Minute)
 				if err != nil {
-					logger.Warn("Corrupt staging transaction found, aborting", zap.String("txID", txID), zap.Error(err))
-					_ = storageRepo.AbortTransaction(txID)
-					continue
+					logger.Warn("Expired transactions cleanup failed", zap.Error(err))
 				}
-
-				if tx.State == "PREPARED" && time.Since(tx.CreatedAt) > 2*time.Minute {
-					logger.Info("Aborting expired/dangling prepared transaction (coordinator timeout)",
-						zap.String("txID", txID),
+				for _, tx := range aborted {
+					logger.Info("Aborted expired/dangling prepared transaction (coordinator timeout)",
+						zap.String("txID", tx.ID),
 						zap.String("bucket", tx.Bucket),
 						zap.String("key", tx.Key),
 						zap.Time("created_at", tx.CreatedAt),
 					)
-					_ = storageRepo.AbortTransaction(txID)
+				}
+
+				removed, err := maint.CleanupOrphanedObjects(5 * time.Minute)
+				if err != nil {
+					logger.Warn("Orphaned objects cleanup failed", zap.Error(err))
+				}
+				if removed > 0 {
+					logger.Info("Cleaned up orphaned objects", zap.Int("count", removed))
 				}
 			}
-		}
 
-		runOrphanCleanup := func() {
-			dataPath := filepath.Join(cfg.Storage.Root, "data")
-			metaPath := filepath.Join(cfg.Storage.Root, "meta")
+			runJanitor()
 
-			_ = filepath.Walk(dataPath, func(path string, info os.FileInfo, err error) error {
-				if err != nil {
-					return nil
+			ticker := time.NewTicker(1 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					logger.Debug("Running expired prepared transactions cleanup...")
+					runJanitor()
 				}
-				if info.IsDir() {
-					return nil
-				}
-
-				rel, err := filepath.Rel(dataPath, path)
-				if err != nil {
-					return nil
-				}
-
-				parts := strings.SplitN(rel, string(filepath.Separator), 2)
-				if len(parts) < 2 {
-					return nil
-				}
-				bucket := parts[0]
-				key := parts[1]
-
-				mPath := filepath.Join(metaPath, bucket, key+".json")
-				if _, err := os.Stat(mPath); os.IsNotExist(err) {
-					if time.Since(info.ModTime()) > 5*time.Minute {
-						logger.Warn("Found orphaned S3 data file without metadata, deleting",
-							zap.String("bucket", bucket),
-							zap.String("key", key),
-							zap.String("path", path),
-							zap.Time("mod_time", info.ModTime()),
-						)
-						_ = os.Remove(path)
-
-						dir := filepath.Dir(path)
-						bucketDir := filepath.Join(dataPath, bucket)
-						for dir != bucketDir && dir != dataPath && len(dir) > len(bucketDir) {
-							entries, err := os.ReadDir(dir)
-							if err == nil && len(entries) == 0 {
-								_ = os.Remove(dir)
-							} else {
-								break
-							}
-							dir = filepath.Dir(dir)
-						}
-					}
-				}
-				return nil
-			})
-		}
-
-		runCleanup()
-		runOrphanCleanup()
-
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				logger.Debug("Running expired prepared transactions cleanup...")
-				runCleanup()
-				runOrphanCleanup()
 			}
-		}
-	}()
+		}()
+	} else {
+		logger.Info("Storage backend does not support MaintenanceRepository, skipping background maintenance workers")
+	}
 
 	go func() {
 		svc.UpdateStorageMetrics()
@@ -359,4 +291,15 @@ func initLogger(levelStr, formatStr string) *zap.Logger {
 		os.Exit(1)
 	}
 	return logger
+}
+
+// newStorageRepository constructs the storage backend selected by cfg.Storage.Type.
+// To add a new backend, add a case here and implement s3app.StorageRepository.
+func newStorageRepository(cfg *config.Config) (s3app.StorageRepository, error) {
+	switch strings.ToLower(cfg.Storage.Type) {
+	case "fs", "":
+		return fs.NewFilesystemRepository(cfg.Storage.Root)
+	default:
+		return nil, fmt.Errorf("unsupported storage type: %s", cfg.Storage.Type)
+	}
 }

@@ -125,7 +125,6 @@ func (m *mockStorage) GetStagedObjectReader(txID string) (io.ReadCloser, error) 
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
-
 func (m *mockStorage) GetObject(bucket, key string) (io.ReadCloser, s3.ObjectMeta, error) {
 	path := bucket + "/" + key
 	data, exists := m.objects[path]
@@ -261,26 +260,40 @@ type mockClusterManager struct {
 	deadNodes []string
 }
 
-func (m *mockClusterManager) NodeID() string { return "node-1" }
-func (m *mockClusterManager) IsLeader() bool { return true }
+func (m *mockClusterManager) NodeID() string                { return "node-1" }
+func (m *mockClusterManager) IsLeader() bool                { return true }
 func (m *mockClusterManager) LeaderInternalAddress() string { return "localhost:9001" }
-func (m *mockClusterManager) AliveFollowers() []string { return m.followers }
-func (m *mockClusterManager) Mode() string { return "static" }
+func (m *mockClusterManager) AliveFollowers() []string      { return m.followers }
+func (m *mockClusterManager) Mode() string                  { return "static" }
 func (m *mockClusterManager) MarkDead(nodeID string) {
 	m.deadNodes = append(m.deadNodes, nodeID)
 }
 func (m *mockClusterManager) MarkAlive(nodeID, internalAddr string) {}
-func (m *mockClusterManager) Status() string { return "READY" }
-func (m *mockClusterManager) SetLocalStatus(status string) {}
+func (m *mockClusterManager) Status() string                        { return "READY" }
+func (m *mockClusterManager) SetLocalStatus(status string)          {}
 
+// MetricsRecorder Mock (no-op)
+
+type mockMetricsRecorder struct{}
+
+func (m *mockMetricsRecorder) SetBucketsTotal(count int)                      {}
+func (m *mockMetricsRecorder) SetObjectsTotal(bucket string, count int64)     {}
+func (m *mockMetricsRecorder) SetStorageUsedBytes(bucket string, bytes int64) {}
+func (m *mockMetricsRecorder) SetClusterRole(isLeader bool)                   {}
+func (m *mockMetricsRecorder) SetClusterStatus(status string)                 {}
+func (m *mockMetricsRecorder) SetSyncLeaseActive(active bool)                 {}
+func (m *mockMetricsRecorder) SetWritesBlocked(blocked bool)                  {}
+func (m *mockMetricsRecorder) SetActiveWrites(count int)                      {}
+func (m *mockMetricsRecorder) IncReplicationPrepare(result string)            {}
+func (m *mockMetricsRecorder) IncReplicationCommit(result string)             {}
+func (m *mockMetricsRecorder) IncReplicationAbort(reason string)              {}
 
 // --- Tests ---
-
 func TestPutObjectStandaloneSuccess(t *testing.T) {
 	storage := newMockStorage()
 	replicator := &mockReplicator{}
 	cluster := &mockClusterManager{}
-	service := NewService(storage, replicator, cluster, zap.NewNop())
+	service := NewService(storage, replicator, cluster, &mockMetricsRecorder{}, zap.NewNop())
 
 	_ = service.CreateBucket("test-bucket")
 	content := []byte("object content")
@@ -309,7 +322,7 @@ func TestPutObjectReplicationSuccess(t *testing.T) {
 	storage := newMockStorage()
 	replicator := &mockReplicator{}
 	cluster := &mockClusterManager{followers: []string{"node-2"}}
-	service := NewService(storage, replicator, cluster, zap.NewNop())
+	service := NewService(storage, replicator, cluster, &mockMetricsRecorder{}, zap.NewNop())
 
 	content := []byte("replicated content")
 	_, err := service.PutObject(context.Background(), "test-bucket", "obj.txt", bytes.NewReader(content), int64(len(content)), s3.ObjectMeta{})
@@ -330,7 +343,7 @@ func TestPutObjectReplicationPrepareFailure(t *testing.T) {
 	storage := newMockStorage()
 	replicator := &mockReplicator{prepareErr: errors.New("network timeout")}
 	cluster := &mockClusterManager{followers: []string{"node-2"}}
-	service := NewService(storage, replicator, cluster, zap.NewNop())
+	service := NewService(storage, replicator, cluster, &mockMetricsRecorder{}, zap.NewNop())
 
 	content := []byte("failed replication content")
 	_, err := service.PutObject(context.Background(), "test-bucket", "obj.txt", bytes.NewReader(content), int64(len(content)), s3.ObjectMeta{})
@@ -358,7 +371,7 @@ func TestPutObjectWaitBehavior(t *testing.T) {
 	storage := newMockStorage()
 	replicator := &mockReplicator{}
 	cluster := &mockClusterManager{}
-	service := NewService(storage, replicator, cluster, zap.NewNop())
+	service := NewService(storage, replicator, cluster, &mockMetricsRecorder{}, zap.NewNop())
 
 	_ = service.CreateBucket("test-bucket")
 	content := []byte("waiting content")
@@ -399,7 +412,7 @@ func TestCompleteMultipartUploadDeletesPartsOnTheFly(t *testing.T) {
 	storage := newMockStorage()
 	replicator := &mockReplicator{}
 	cluster := &mockClusterManager{}
-	service := NewService(storage, replicator, cluster, zap.NewNop())
+	service := NewService(storage, replicator, cluster, &mockMetricsRecorder{}, zap.NewNop())
 
 	bucket := "test-bucket"
 	key := "large-file.bin"

@@ -21,24 +21,39 @@ import (
 
 type mockCluster struct{}
 
-func (m *mockCluster) NodeID() string                 { return "node-1" }
-func (m *mockCluster) IsLeader() bool                 { return true }
-func (m *mockCluster) LeaderInternalAddress() string { return "" }
-func (m *mockCluster) AliveFollowers() []string       { return nil }
-func (m *mockCluster) Mode() string                   { return "single" }
-func (m *mockCluster) MarkDead(nodeID string)         {}
-func (m *mockCluster) MarkAlive(nodeID, internalAddr string)         {}
-func (m *mockCluster) Status() string                 { return "READY" }
-func (m *mockCluster) SetLocalStatus(status string)   {}
+func (m *mockCluster) NodeID() string                        { return "node-1" }
+func (m *mockCluster) IsLeader() bool                        { return true }
+func (m *mockCluster) LeaderInternalAddress() string         { return "" }
+func (m *mockCluster) AliveFollowers() []string              { return nil }
+func (m *mockCluster) Mode() string                          { return "single" }
+func (m *mockCluster) MarkDead(nodeID string)                {}
+func (m *mockCluster) MarkAlive(nodeID, internalAddr string) {}
+func (m *mockCluster) Status() string                        { return "READY" }
+func (m *mockCluster) SetLocalStatus(status string)          {}
 
+type mockMetricsRecorder struct{}
+
+func (m *mockMetricsRecorder) SetBucketsTotal(count int)                      {}
+func (m *mockMetricsRecorder) SetObjectsTotal(bucket string, count int64)     {}
+func (m *mockMetricsRecorder) SetStorageUsedBytes(bucket string, bytes int64) {}
+func (m *mockMetricsRecorder) SetClusterRole(isLeader bool)                   {}
+func (m *mockMetricsRecorder) SetClusterStatus(status string)                 {}
+func (m *mockMetricsRecorder) SetSyncLeaseActive(active bool)                 {}
+func (m *mockMetricsRecorder) SetWritesBlocked(blocked bool)                  {}
+func (m *mockMetricsRecorder) SetActiveWrites(count int)                      {}
+func (m *mockMetricsRecorder) IncReplicationPrepare(result string)            {}
+func (m *mockMetricsRecorder) IncReplicationCommit(result string)             {}
+func (m *mockMetricsRecorder) IncReplicationAbort(reason string)              {}
 
 type mockReplicator struct{}
 
 func (m *mockReplicator) PrepareAll(ctx context.Context, tx s3.Transaction, meta s3.ObjectMeta) map[string]error {
 	return nil
 }
-func (m *mockReplicator) CommitAll(ctx context.Context, txID, bucket, key string) map[string]error { return nil }
-func (m *mockReplicator) AbortAll(ctx context.Context, txID string) map[string]error               { return nil }
+func (m *mockReplicator) CommitAll(ctx context.Context, txID, bucket, key string) map[string]error {
+	return nil
+}
+func (m *mockReplicator) AbortAll(ctx context.Context, txID string) map[string]error { return nil }
 
 type mockStorage struct {
 	buckets map[string]bool
@@ -142,7 +157,9 @@ func (m *mockStorage) AbortMultipartUpload(bucket, uploadID string) error { retu
 func (m *mockStorage) GetMultipartUpload(bucket, uploadID string) (s3.MultipartUpload, error) {
 	return s3.MultipartUpload{Bucket: bucket, Key: "mykey"}, nil
 }
-func (m *mockStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error) { return nil, nil }
+func (m *mockStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error) {
+	return nil, nil
+}
 
 func TestS3APIRouting(t *testing.T) {
 	store := &mockStorage{
@@ -152,7 +169,7 @@ func TestS3APIRouting(t *testing.T) {
 	}
 	_ = store.CreateBucket("mybucket")
 
-	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, zap.NewNop())
+	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, &mockMetricsRecorder{}, zap.NewNop())
 	handler := NewHandler(svc, nil, &mockCluster{}, "token", false, zap.NewNop())
 
 	// Test 1: Put Object
@@ -242,13 +259,12 @@ func TestRouterAllowLocalReads(t *testing.T) {
 	_, _ = store.StageObject("tx-1", bytes.NewReader([]byte("data")), 4, s3.ObjectMeta{}, s3.Transaction{})
 	_, _ = store.CommitTransaction("tx-1", "mybucket", "file.txt")
 
-	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, zap.NewNop())
-
 	// Mock follower cluster manager
 	followerCluster := &mockClusterManager{
 		isLeader: false,
 		status:   "READY",
 	}
+	svc := s3app.NewService(store, &mockReplicator{}, followerCluster, &mockMetricsRecorder{}, zap.NewNop())
 
 	// 1. With allowLocalReads = false: GET request should be proxied
 	handlerWithoutLocalReads := NewHandler(svc, nil, followerCluster, "token", false, zap.NewNop())
@@ -273,7 +289,8 @@ func TestRouterAllowLocalReads(t *testing.T) {
 		isLeader: false,
 		status:   "SYNCING",
 	}
-	handlerNotReady := NewHandler(svc, nil, notReadyCluster, "token", true, zap.NewNop())
+	svcNotReady := s3app.NewService(store, &mockReplicator{}, notReadyCluster, &mockMetricsRecorder{}, zap.NewNop())
+	handlerNotReady := NewHandler(svcNotReady, nil, notReadyCluster, "token", true, zap.NewNop())
 	req = httptest.NewRequest(http.MethodGet, "/mybucket/file.txt", nil)
 	rec = httptest.NewRecorder()
 	handlerNotReady.ServeHTTP(rec, req)
@@ -295,12 +312,12 @@ type mockClusterManager struct {
 	status   string
 }
 
-func (m *mockClusterManager) NodeID() string                 { return "node" }
-func (m *mockClusterManager) IsLeader() bool                 { return m.isLeader }
-func (m *mockClusterManager) LeaderInternalAddress() string { return "" }
-func (m *mockClusterManager) AliveFollowers() []string       { return nil }
-func (m *mockClusterManager) Mode() string                   { return "static" }
-func (m *mockClusterManager) MarkDead(nodeID string)         {}
-func (m *mockClusterManager) MarkAlive(nodeID, internalAddr string)         {}
-func (m *mockClusterManager) Status() string                 { return m.status }
-func (m *mockClusterManager) SetLocalStatus(status string)   {}
+func (m *mockClusterManager) NodeID() string                        { return "node" }
+func (m *mockClusterManager) IsLeader() bool                        { return m.isLeader }
+func (m *mockClusterManager) LeaderInternalAddress() string         { return "" }
+func (m *mockClusterManager) AliveFollowers() []string              { return nil }
+func (m *mockClusterManager) Mode() string                          { return "static" }
+func (m *mockClusterManager) MarkDead(nodeID string)                {}
+func (m *mockClusterManager) MarkAlive(nodeID, internalAddr string) {}
+func (m *mockClusterManager) Status() string                        { return m.status }
+func (m *mockClusterManager) SetLocalStatus(status string)          {}

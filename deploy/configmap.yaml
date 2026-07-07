@@ -10,6 +10,7 @@ data:
       s3_listen: ":30010"
       internal_listen: ":9001"
     storage:
+      type: "fs"
       root: "/data"
     cluster:
       mode: "k8s"

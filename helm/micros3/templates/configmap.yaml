@@ -12,6 +12,7 @@ data:
       s3_listen: {{ .Values.config.server.s3Listen | quote }}
       internal_listen: {{ .Values.config.server.internalListen | quote }}
     storage:
+      type: {{ .Values.config.storage.type | quote }}
       root: {{ .Values.config.storage.root | quote }}
     cluster:
       mode: {{ .Values.config.cluster.mode | quote }}

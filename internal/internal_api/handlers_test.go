@@ -23,23 +23,39 @@ type mockCluster struct {
 	status string
 }
 
-func (m *mockCluster) NodeID() string                 { return "node-1" }
-func (m *mockCluster) IsLeader() bool                 { return true }
-func (m *mockCluster) LeaderInternalAddress() string { return "" }
-func (m *mockCluster) AliveFollowers() []string       { return nil }
-func (m *mockCluster) Mode() string                   { return "static" }
-func (m *mockCluster) MarkDead(nodeID string)         {}
-func (m *mockCluster) MarkAlive(nodeID, internalAddr string)         {}
-func (m *mockCluster) Status() string                 { return m.status }
-func (m *mockCluster) SetLocalStatus(status string)   { m.status = status }
+func (m *mockCluster) NodeID() string                        { return "node-1" }
+func (m *mockCluster) IsLeader() bool                        { return true }
+func (m *mockCluster) LeaderInternalAddress() string         { return "" }
+func (m *mockCluster) AliveFollowers() []string              { return nil }
+func (m *mockCluster) Mode() string                          { return "static" }
+func (m *mockCluster) MarkDead(nodeID string)                {}
+func (m *mockCluster) MarkAlive(nodeID, internalAddr string) {}
+func (m *mockCluster) Status() string                        { return m.status }
+func (m *mockCluster) SetLocalStatus(status string)          { m.status = status }
+
+type mockMetricsRecorder struct{}
+
+func (m *mockMetricsRecorder) SetBucketsTotal(count int)                      {}
+func (m *mockMetricsRecorder) SetObjectsTotal(bucket string, count int64)     {}
+func (m *mockMetricsRecorder) SetStorageUsedBytes(bucket string, bytes int64) {}
+func (m *mockMetricsRecorder) SetClusterRole(isLeader bool)                   {}
+func (m *mockMetricsRecorder) SetClusterStatus(status string)                 {}
+func (m *mockMetricsRecorder) SetSyncLeaseActive(active bool)                 {}
+func (m *mockMetricsRecorder) SetWritesBlocked(blocked bool)                  {}
+func (m *mockMetricsRecorder) SetActiveWrites(count int)                      {}
+func (m *mockMetricsRecorder) IncReplicationPrepare(result string)            {}
+func (m *mockMetricsRecorder) IncReplicationCommit(result string)             {}
+func (m *mockMetricsRecorder) IncReplicationAbort(reason string)              {}
 
 type mockReplicator struct{}
 
 func (m *mockReplicator) PrepareAll(ctx context.Context, tx s3.Transaction, meta s3.ObjectMeta) map[string]error {
 	return nil
 }
-func (m *mockReplicator) CommitAll(ctx context.Context, txID, bucket, key string) map[string]error { return nil }
-func (m *mockReplicator) AbortAll(ctx context.Context, txID string) map[string]error               { return nil }
+func (m *mockReplicator) CommitAll(ctx context.Context, txID, bucket, key string) map[string]error {
+	return nil
+}
+func (m *mockReplicator) AbortAll(ctx context.Context, txID string) map[string]error { return nil }
 
 type mockStorage struct {
 	buckets       map[string]bool
@@ -127,11 +143,13 @@ func (m *mockStorage) AbortMultipartUpload(bucket, uploadID string) error { retu
 func (m *mockStorage) GetMultipartUpload(bucket, uploadID string) (s3.MultipartUpload, error) {
 	return s3.MultipartUpload{}, nil
 }
-func (m *mockStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error) { return nil, nil }
+func (m *mockStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error) {
+	return nil, nil
+}
 
 func TestInternalHandlersAuth(t *testing.T) {
 	store := &mockStorage{buckets: make(map[string]bool)}
-	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, zap.NewNop())
+	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, &mockMetricsRecorder{}, zap.NewNop())
 	h := NewHandler(store, svc, &mockCluster{status: "READY"}, nil, "secret-token", zap.NewNop())
 
 	// Request without token should fail
@@ -162,7 +180,7 @@ func TestInternalHealthStats(t *testing.T) {
 		stagedMetas:   make(map[string]s3.ObjectMeta),
 		txs:           make(map[string]s3.Transaction),
 	}
-	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, zap.NewNop())
+	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, &mockMetricsRecorder{}, zap.NewNop())
 	h := NewHandler(store, svc, &mockCluster{status: "READY"}, nil, "secret-token", zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/internal/health", nil)
@@ -196,7 +214,7 @@ func TestInternal2PCReplicationHandlers(t *testing.T) {
 		stagedMetas:   make(map[string]s3.ObjectMeta),
 		txs:           make(map[string]s3.Transaction),
 	}
-	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, zap.NewNop())
+	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, &mockMetricsRecorder{}, zap.NewNop())
 	h := NewHandler(store, svc, &mockCluster{status: "READY"}, nil, "secret-token", zap.NewNop())
 
 	txID := "tx-567"
@@ -254,7 +272,7 @@ func TestInternal2PCReplicationHandlers(t *testing.T) {
 
 func TestInternalS3ProxyForwarding(t *testing.T) {
 	store := &mockStorage{buckets: map[string]bool{"mybucket": true}}
-	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, zap.NewNop())
+	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, &mockMetricsRecorder{}, zap.NewNop())
 
 	// Fake S3 API handler that counts requests
 	calledS3 := false

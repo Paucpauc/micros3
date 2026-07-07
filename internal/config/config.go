@@ -21,7 +21,14 @@ type ServerConfig struct {
 }
 
 type StorageConfig struct {
+	// Type selects the storage backend implementation. Currently supported:
+	//   "fs" — local filesystem (default).
+	// Future backends (e.g. "s3", "postgres") will be added here.
+	Type string `yaml:"type"`
+	// Root is the filesystem root path, used when Type == "fs".
 	Root string `yaml:"root"`
+	// DSN is an optional connection string for non-filesystem backends.
+	DSN string `yaml:"dsn"`
 }
 
 type K8sConfig struct {
@@ -127,6 +134,7 @@ func DefaultConfig() *Config {
 			InternalListen: ":9001",
 		},
 		Storage: StorageConfig{
+			Type: "fs",
 			Root: "/data/micros3",
 		},
 		Cluster: ClusterConfig{
@@ -217,8 +225,14 @@ func (c *Config) OverrideWithEnv() {
 	if val := os.Getenv("MICROS3_SERVER_INTERNAL_LISTEN"); val != "" {
 		c.Server.InternalListen = val
 	}
+	if val := os.Getenv("MICROS3_STORAGE_TYPE"); val != "" {
+		c.Storage.Type = val
+	}
 	if val := os.Getenv("MICROS3_STORAGE_ROOT"); val != "" {
 		c.Storage.Root = val
+	}
+	if val := os.Getenv("MICROS3_STORAGE_DSN"); val != "" {
+		c.Storage.DSN = val
 	}
 	if val := os.Getenv("MICROS3_CLUSTER_MODE"); val != "" {
 		c.Cluster.Mode = val
@@ -333,8 +347,20 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid cluster.mode: %s, must be one of [k8s, static, single]", c.Cluster.Mode)
 	}
 
-	if c.Storage.Root == "" {
-		return fmt.Errorf("storage.root directory is required")
+	storageType := strings.ToLower(c.Storage.Type)
+	if storageType == "" {
+		storageType = "fs"
+		c.Storage.Type = storageType
+	}
+	switch storageType {
+	case "fs":
+		if c.Storage.Root == "" {
+			return fmt.Errorf("storage.root directory is required when storage.type is 'fs'")
+		}
+	default:
+		if c.Storage.DSN == "" {
+			return fmt.Errorf("storage.dsn is required when storage.type is '%s'", c.Storage.Type)
+		}
 	}
 
 	c.Sync.WriteBlockBehavior = strings.ToLower(c.Sync.WriteBlockBehavior)

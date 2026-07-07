@@ -112,24 +112,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var accessKey string
 
+	if h.service.ShouldProxyToLeader(r.Method, h.allowLocalReads) {
+		h.logger.Debug("Not leader, proxying request to leader",
+			zap.String("path", r.URL.Path),
+			zap.String("request_id", reqID),
+		)
+		metrics.ProxyRequestsTotal.WithLabelValues(r.Method).Inc()
+		h.ProxyToLeader(rw, r)
+		h.logAccess(rw, r, accessKey, start)
+		return
+	}
+
 	if !h.cluster.IsLeader() {
-		isRead := r.Method == http.MethodGet || r.Method == http.MethodHead
-		if h.allowLocalReads && h.cluster.Status() == "READY" && isRead {
-			h.logger.Debug("Not leader, but handling GET/HEAD request locally",
-				zap.String("method", r.Method),
-				zap.String("path", r.URL.Path),
-				zap.String("request_id", reqID),
-			)
-		} else {
-			h.logger.Debug("Not leader, proxying request to leader",
-				zap.String("path", r.URL.Path),
-				zap.String("request_id", reqID),
-			)
-			metrics.ProxyRequestsTotal.WithLabelValues(r.Method).Inc()
-			h.ProxyToLeader(rw, r)
-			h.logAccess(rw, r, accessKey, start)
-			return
-		}
+		h.logger.Debug("Not leader, but handling GET/HEAD request locally",
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.String("request_id", reqID),
+		)
 	}
 
 	if h.auth != nil {

@@ -22,6 +22,7 @@ config:
     s3Listen: ":9000"
     internalListen: ":9001"
   storage:
+    type: "fs"
     root: "/data"
   cluster:
     mode: "k8s"
