@@ -178,6 +178,13 @@ func (s *Service) HandleSyncRequest(ctx context.Context, nodeID, followerAddr st
 		s.EndSyncLease(nodeID)
 	}()
 
+	// Register the follower in the cluster state before sync begins.
+	// This ensures the follower is included in KnownFollowers() so that
+	// ReadECObject can query it for EC shards during the sync process,
+	// even if the discovery loop hasn't added it to followerStates yet
+	// (e.g. right after a full cluster restart).
+	s.cluster.RegisterFollower(nodeID, followerAddr)
+
 	// Drive the sync process from the leader side
 	syncErr = s.syncCoordinator.SyncFollower(ctx, nodeID, followerAddr)
 	if syncErr != nil {
