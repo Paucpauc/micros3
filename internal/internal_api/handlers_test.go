@@ -27,6 +27,7 @@ func (m *mockCluster) NodeID() string                        { return "node-1" }
 func (m *mockCluster) IsLeader() bool                        { return true }
 func (m *mockCluster) LeaderInternalAddress() string         { return "" }
 func (m *mockCluster) AliveFollowers() []string              { return nil }
+func (m *mockCluster) KnownFollowers() []string              { return nil }
 func (m *mockCluster) Mode() string                          { return "static" }
 func (m *mockCluster) MarkDead(nodeID string)                {}
 func (m *mockCluster) MarkAlive(nodeID, internalAddr string) {}

@@ -20,17 +20,17 @@ type nodeState struct {
 }
 
 type StaticClusterManager struct {
-	localNodeID  string
-	staticNodes  []config.StaticNode
-	forceLeader  string
-	healthCfg    config.HealthConfig
-	client       *internal_api.Client
-	logger       *zap.Logger
+	localNodeID string
+	staticNodes []config.StaticNode
+	forceLeader string
+	healthCfg   config.HealthConfig
+	client      *internal_api.Client
+	logger      *zap.Logger
 
-	mu           sync.RWMutex
-	nodesState   map[string]*nodeState
-	cancelLoop   context.CancelFunc
-	localStatus  cluster.NodeStatus
+	mu          sync.RWMutex
+	nodesState  map[string]*nodeState
+	cancelLoop  context.CancelFunc
+	localStatus cluster.NodeStatus
 }
 
 func NewStaticClusterManager(
@@ -39,14 +39,14 @@ func NewStaticClusterManager(
 	logger *zap.Logger,
 ) *StaticClusterManager {
 	mgr := &StaticClusterManager{
-		localNodeID:  cfg.Node.ID,
-		staticNodes:  cfg.Cluster.Static.Nodes,
-		forceLeader:  cfg.Cluster.Static.ForceLeader,
-		healthCfg:    cfg.Health,
-		client:       client,
-		logger:       logger,
-		nodesState:   make(map[string]*nodeState),
-		localStatus:  cluster.StatusReady,
+		localNodeID: cfg.Node.ID,
+		staticNodes: cfg.Cluster.Static.Nodes,
+		forceLeader: cfg.Cluster.Static.ForceLeader,
+		healthCfg:   cfg.Health,
+		client:      client,
+		logger:      logger,
+		nodesState:  make(map[string]*nodeState),
+		localStatus: cluster.StatusReady,
 	}
 
 	// Initialize state for all static nodes
@@ -141,6 +141,27 @@ func (m *StaticClusterManager) AliveFollowers() []string {
 			continue
 		}
 		if ns.node.Status == cluster.StatusReady {
+			followers = append(followers, ns.node.InternalAddress)
+		}
+	}
+	return followers
+}
+
+// KnownFollowers returns the internal addresses of all known follower
+// nodes that are not OFFLINE (i.e. READY or SYNCING). Unlike AliveFollowers
+// which only returns READY nodes, this includes nodes that are still
+// synchronizing — this is critical for EC shard reconstruction after a
+// cluster restart when all followers are in SYNCING state.
+func (m *StaticClusterManager) KnownFollowers() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var followers []string
+	for id, ns := range m.nodesState {
+		if id == m.localNodeID {
+			continue
+		}
+		if ns.node.Status != cluster.StatusOffline {
 			followers = append(followers, ns.node.InternalAddress)
 		}
 	}

@@ -33,6 +33,10 @@ func (m *StandaloneClusterManager) AliveFollowers() []string {
 	return nil
 }
 
+func (m *StandaloneClusterManager) KnownFollowers() []string {
+	return nil
+}
+
 func (m *StandaloneClusterManager) Mode() string {
 	return "single"
 }

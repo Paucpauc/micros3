@@ -245,6 +245,23 @@ func (m *K8sClusterManager) AliveFollowers() []string {
 	return m.followers
 }
 
+// KnownFollowers returns the internal addresses of all known follower
+// nodes that are not OFFLINE (i.e. READY or SYNCING). Unlike AliveFollowers
+// which only returns READY nodes, this includes nodes that are still
+// synchronizing — this is critical for EC shard reconstruction after a
+// cluster restart when all followers are in SYNCING state.
+func (m *K8sClusterManager) KnownFollowers() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var list []string
+	for _, ns := range m.followerStates {
+		if ns.node.Status != cluster.StatusOffline {
+			list = append(list, ns.node.InternalAddress)
+		}
+	}
+	return list
+}
+
 func (m *K8sClusterManager) Mode() string {
 	return "k8s"
 }
