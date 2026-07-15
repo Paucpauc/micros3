@@ -59,6 +59,7 @@ func NewHandler(
 	mux.HandleFunc("/internal/ec-shard", h.handleECShard)
 	mux.HandleFunc("/internal/ec-put-shard", h.handleECPutShard)
 	mux.HandleFunc("/internal/ec-update-meta", h.handleECUpdateMeta)
+	mux.HandleFunc("/internal/ec-remove-replica", h.handleECRemoveReplica)
 
 	return h.verifyTokenMiddleware(mux)
 }
@@ -647,6 +648,40 @@ func (h *InternalHandler) handleECPutShard(w http.ResponseWriter, r *http.Reques
 			zap.String("bucket", bucket),
 			zap.String("key", key),
 			zap.Int("shard_index", shardIdx),
+			zap.Error(err),
+			zap.String("request_id", reqID),
+		)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "OK"})
+}
+
+// handleECRemoveReplica deletes the full replica data file for an object on
+// the receiving node, leaving the metadata and any EC shards intact. The
+// leader sends this to every follower after a successful replica -> EC
+// conversion so that the original full copy is reclaimed.
+func (h *InternalHandler) handleECRemoveReplica(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+	bucket := q.Get("bucket")
+	key := q.Get("key")
+	if bucket == "" || key == "" {
+		http.Error(w, "Missing bucket or key query parameter", http.StatusBadRequest)
+		return
+	}
+
+	reqID := s3.GetRequestID(r.Context())
+	if err := h.storage.RemoveReplicaData(bucket, key); err != nil {
+		h.logger.Warn("Failed to remove replica data after EC conversion",
+			zap.String("bucket", bucket),
+			zap.String("key", key),
 			zap.Error(err),
 			zap.String("request_id", reqID),
 		)

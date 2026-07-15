@@ -177,6 +177,7 @@ func (m *mockSyncStorage) HasECShard(bucket, key string, shardIndex int) (bool, 
 }
 func (m *mockSyncStorage) DeleteECShard(bucket, key string, shardIndex int) error        { return nil }
 func (m *mockSyncStorage) UpdateObjectMeta(bucket, key string, meta s3.ObjectMeta) error { return nil }
+func (m *mockSyncStorage) RemoveReplicaData(bucket, key string) error                    { return nil }
 
 // --- Leader-driven SyncCoordinator test ---
 

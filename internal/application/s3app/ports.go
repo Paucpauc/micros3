@@ -39,6 +39,12 @@ type StorageRepository interface {
 	// UpdateObjectMeta overwrites the metadata file for an existing object
 	// (used when converting replica -> EC and vice versa).
 	UpdateObjectMeta(bucket, key string, meta s3.ObjectMeta) error
+	// RemoveReplicaData deletes only the full replica data file for an
+	// object, leaving the metadata and any EC shards intact. It is used
+	// after a successful replica -> EC conversion to reclaim the space
+	// occupied by the original full copy. If the data file does not exist
+	// (e.g. the object was already converted), it is a no-op.
+	RemoveReplicaData(bucket, key string) error
 
 	// Multipart Upload operations
 	CreateMultipartUpload(bucket, key string) (string, error)
