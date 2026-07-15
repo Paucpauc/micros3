@@ -364,8 +364,10 @@ func (m *Manager) ReadECObject(ctx context.Context, bucket, key string) (io.Read
 	)
 
 	// 2. Broadcast metadata request to all nodes to discover which shards
-	// each node holds.
-	followers := m.cluster.AliveFollowers()
+	// each node holds. Use KnownFollowers (which includes SYNCING nodes)
+	// instead of AliveFollowers so that EC reconstruction works even when
+	// followers are still synchronizing after a cluster restart.
+	followers := m.cluster.KnownFollowers()
 	allAddrs := append([]string{""}, followers...) // "" = local
 
 	type metaResult struct {
@@ -535,7 +537,10 @@ func (m *Manager) RepairECObject(ctx context.Context, bucket, key string) error 
 	n := k + mShards
 
 	// 1. Broadcast metadata to discover which nodes have which shards.
-	followers := m.cluster.AliveFollowers()
+	// Use KnownFollowers (which includes SYNCING nodes) instead of
+	// AliveFollowers so that repair works even when followers are still
+	// synchronizing after a cluster restart.
+	followers := m.cluster.KnownFollowers()
 	allAddrs := append([]string{""}, followers...)
 
 	type metaResult struct {

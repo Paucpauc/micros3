@@ -28,6 +28,7 @@ func (m *mockSyncCluster) NodeID() string                        { return "follo
 func (m *mockSyncCluster) IsLeader() bool                        { return false }
 func (m *mockSyncCluster) LeaderInternalAddress() string         { return "" }
 func (m *mockSyncCluster) AliveFollowers() []string              { return nil }
+func (m *mockSyncCluster) KnownFollowers() []string              { return nil }
 func (m *mockSyncCluster) Mode() string                          { return "static" }
 func (m *mockSyncCluster) MarkDead(nodeID string)                {}
 func (m *mockSyncCluster) MarkAlive(nodeID, internalAddr string) {}

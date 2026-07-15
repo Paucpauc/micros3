@@ -280,6 +280,7 @@ func (m *mockClusterManager) NodeID() string                { return "node-1" }
 func (m *mockClusterManager) IsLeader() bool                { return true }
 func (m *mockClusterManager) LeaderInternalAddress() string { return "localhost:9001" }
 func (m *mockClusterManager) AliveFollowers() []string      { return m.followers }
+func (m *mockClusterManager) KnownFollowers() []string      { return m.followers }
 func (m *mockClusterManager) Mode() string                  { return "static" }
 func (m *mockClusterManager) MarkDead(nodeID string) {
 	m.deadNodes = append(m.deadNodes, nodeID)
