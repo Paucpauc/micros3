@@ -65,8 +65,8 @@ func main() {
 		clusterMgr = staticMgr
 		replicator = replication.NewReplicator(apiClient, staticMgr, storageRepo, 15*time.Minute, logger)
 
-		// Start SyncWorker for follower nodes to catch up
-		syncWorker := replication.NewSyncWorker(apiClient, staticMgr, storageRepo, logger, cfg.Cluster.K8s.InternalPort)
+		// Start SyncWorker for follower nodes to request leader-driven sync
+		syncWorker := replication.NewSyncWorker(apiClient, staticMgr, logger, cfg.Cluster.K8s.InternalPort)
 		syncWorker.Start(context.Background())
 	} else if strings.ToLower(cfg.Cluster.Mode) == "k8s" {
 		k8sMgr, err := cluster.NewK8sClusterManager(cfg, apiClient, logger)
@@ -80,8 +80,8 @@ func main() {
 		clusterMgr = k8sMgr
 		replicator = replication.NewReplicator(apiClient, k8sMgr, storageRepo, 15*time.Minute, logger)
 
-		// Start SyncWorker for follower nodes to catch up
-		syncWorker := replication.NewSyncWorker(apiClient, k8sMgr, storageRepo, logger, cfg.Cluster.K8s.InternalPort)
+		// Start SyncWorker for follower nodes to request leader-driven sync
+		syncWorker := replication.NewSyncWorker(apiClient, k8sMgr, logger, cfg.Cluster.K8s.InternalPort)
 		syncWorker.Start(context.Background())
 	} else {
 		// Fallback to standalone
@@ -92,6 +92,11 @@ func main() {
 	// 5. Initialize S3 Application Service
 	svc := s3app.NewService(storageRepo, replicator, clusterMgr, metrics.NewPrometheusRecorder(), logger)
 	svc.SetWriteBlockBehavior(cfg.Sync.WriteBlockBehavior)
+
+	// Inject leader-driven sync coordinator (used by the leader when a
+	// follower requests synchronization)
+	syncCoordinator := replication.NewSyncCoordinator(apiClient, storageRepo, logger)
+	svc.SetSyncCoordinator(syncCoordinator)
 
 	// 6. Initialize Auth Validator (if credentials are set)
 	var authValidator *s3api.AuthValidator

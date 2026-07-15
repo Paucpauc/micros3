@@ -23,6 +23,7 @@ type Service struct {
 	replicator         Replicator
 	cluster            ClusterManager
 	metrics            MetricsRecorder
+	syncCoordinator    SyncCoordinator
 	logger             *zap.Logger
 	syncingNodes       map[string]time.Time
 	activeWrites       int
@@ -43,6 +44,13 @@ func NewService(storage StorageRepository, replicator Replicator, cluster Cluste
 	}
 	s.writeCond = sync.NewCond(&s.syncMutex)
 	return s
+}
+
+// SetSyncCoordinator injects the leader-driven sync coordinator. It is set
+// after construction because the coordinator depends on the internal API
+// client which is created alongside the cluster manager.
+func (s *Service) SetSyncCoordinator(coord SyncCoordinator) {
+	s.syncCoordinator = coord
 }
 
 func (s *Service) SetWriteBlockBehavior(behavior string) {
@@ -143,6 +151,43 @@ func (s *Service) EndSyncLease(nodeID string) {
 		s.metrics.SetSyncLeaseActive(false)
 		s.metrics.SetWritesBlocked(false)
 	}
+}
+
+// HandleSyncRequest is called on the leader when a follower requests
+// synchronization. The leader blocks new writes, drives the sync process
+// via the SyncCoordinator, then unblocks writes and marks the follower as
+// alive.
+func (s *Service) HandleSyncRequest(ctx context.Context, nodeID, followerAddr string) error {
+	if s.syncCoordinator == nil {
+		return errors.New("sync coordinator is not configured")
+	}
+
+	// Block new writes and drain active writes
+	s.StartSyncLease(nodeID)
+
+	var syncErr error
+	defer func() {
+		s.EndSyncLease(nodeID)
+	}()
+
+	// Drive the sync process from the leader side
+	syncErr = s.syncCoordinator.SyncFollower(ctx, nodeID, followerAddr)
+	if syncErr != nil {
+		s.logger.Error("SyncFollower failed",
+			zap.String("node_id", nodeID),
+			zap.String("follower_addr", followerAddr),
+			zap.Error(syncErr),
+		)
+		return syncErr
+	}
+
+	// Mark follower as alive so it participates in 2PC going forward
+	s.cluster.MarkAlive(nodeID, followerAddr)
+	s.logger.Info("Follower synchronized and marked alive",
+		zap.String("node_id", nodeID),
+		zap.String("follower_addr", followerAddr),
+	)
+	return nil
 }
 
 func (s *Service) IsWritesBlocked() bool {

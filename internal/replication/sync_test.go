@@ -3,7 +3,6 @@ package replication
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -19,21 +18,21 @@ import (
 	"go.uber.org/zap"
 )
 
-// Reusing mock implementations for Sync tests
+// --- Mocks ---
 
 type mockSyncCluster struct {
 	status string
 }
 
-func (m *mockSyncCluster) NodeID() string                 { return "follower-1" }
-func (m *mockSyncCluster) IsLeader() bool                 { return false }
-func (m *mockSyncCluster) LeaderInternalAddress() string { return "" }
-func (m *mockSyncCluster) AliveFollowers() []string       { return nil }
-func (m *mockSyncCluster) Mode() string                   { return "static" }
-func (m *mockSyncCluster) MarkDead(nodeID string)         {}
-func (m *mockSyncCluster) MarkAlive(nodeID, internalAddr string)         {}
-func (m *mockSyncCluster) Status() string                 { return m.status }
-func (m *mockSyncCluster) SetLocalStatus(status string)   { m.status = status }
+func (m *mockSyncCluster) NodeID() string                        { return "follower-1" }
+func (m *mockSyncCluster) IsLeader() bool                        { return false }
+func (m *mockSyncCluster) LeaderInternalAddress() string         { return "" }
+func (m *mockSyncCluster) AliveFollowers() []string              { return nil }
+func (m *mockSyncCluster) Mode() string                          { return "static" }
+func (m *mockSyncCluster) MarkDead(nodeID string)                {}
+func (m *mockSyncCluster) MarkAlive(nodeID, internalAddr string) {}
+func (m *mockSyncCluster) Status() string                        { return m.status }
+func (m *mockSyncCluster) SetLocalStatus(status string)          { m.status = status }
 
 type mockSyncStorage struct {
 	mu            sync.Mutex
@@ -162,80 +161,80 @@ func (m *mockSyncStorage) AbortMultipartUpload(bucket, uploadID string) error { 
 func (m *mockSyncStorage) GetMultipartUpload(bucket, uploadID string) (s3.MultipartUpload, error) {
 	return s3.MultipartUpload{}, nil
 }
-func (m *mockSyncStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error) { return nil, nil }
+func (m *mockSyncStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error) {
+	return nil, nil
+}
 
-func TestSyncWorkerSynchronize(t *testing.T) {
+// --- Leader-driven SyncCoordinator test ---
+
+func TestSyncCoordinatorSyncFollower(t *testing.T) {
 	var mu sync.Mutex
-	syncStarted := false
-	syncDone := false
 	getKeysCalled := false
+	prepareCalled := false
+	commitCalled := false
+	syncDeleteCalled := false
+	var deletedKeys []internal_api.KeyInfo
 
-	// 1. Leader mock HTTP server
-	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Follower mock HTTP server — the leader will call these endpoints
+	followerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 
-		if r.URL.Path == "/internal/sync-start" {
-			syncStarted = true
-			w.WriteHeader(http.StatusOK)
-		} else if r.URL.Path == "/internal/sync-done" {
-			syncDone = true
-			w.WriteHeader(http.StatusOK)
-		} else if r.URL.Path == "/internal/sync-heartbeat" {
-			w.WriteHeader(http.StatusOK)
-		} else if r.URL.Path == "/internal/keys" {
+		if r.URL.Path == "/internal/keys" {
 			getKeysCalled = true
+			// Follower reports its current keys
 			resp := internal_api.KeysResponse{
 				Keys: []internal_api.KeyInfo{
-					// File that matches local exactly
+					// File that matches leader exactly — should NOT be pushed
 					{Bucket: "mybucket", Key: "match.txt", CRC32: 111, Size: 5},
-					// File that differs locally (out of sync)
-					{Bucket: "mybucket", Key: "update.txt", CRC32: 222, Size: 6},
-					// New file completely
-					{Bucket: "mybucket", Key: "new.txt", CRC32: 333, Size: 7},
+					// File that differs from leader — should be pushed (updated)
+					{Bucket: "mybucket", Key: "update.txt", CRC32: 999, Size: 7},
+					// Extraneous file — should be deleted
+					{Bucket: "mybucket", Key: "delete.txt", CRC32: 888, Size: 6},
 				},
 				TotalCount: 3,
 			}
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(resp)
-		} else if r.URL.Path == "/internal/object" {
-			key := r.URL.Query().Get("key")
-
-			var data []byte
-			var meta s3.ObjectMeta
-
-			if key == "update.txt" {
-				data = []byte("update")
-				meta = s3.ObjectMeta{ContentType: "text/plain", CRC32: 222}
-			} else if key == "new.txt" {
-				data = []byte("newfile")
-				meta = s3.ObjectMeta{ContentType: "text/plain", CRC32: 333}
-			}
-
-			metaBytes, _ := json.Marshal(meta)
-			w.Header().Set("X-MicroS3-Meta", base64.StdEncoding.EncodeToString(metaBytes))
-			w.Header().Set("Content-Type", "application/octet-stream")
+		} else if r.URL.Path == "/internal/prepare" {
+			prepareCalled = true
+			// Read the body (object data pushed by leader)
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "PREPARED"})
+		} else if r.URL.Path == "/internal/commit" {
+			commitCalled = true
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "COMMITTED"})
+		} else if r.URL.Path == "/internal/sync-delete" {
+			syncDeleteCalled = true
+			var body struct {
+				Keys []internal_api.KeyInfo `json:"keys"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			deletedKeys = body.Keys
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "DELETED"})
 		}
 	}))
-	defer leaderSrv.Close()
+	defer followerSrv.Close()
 
-	// 2. Setup follower storage
-	localStore := &mockSyncStorage{
+	// Leader storage — contains the authoritative state
+	leaderStore := &mockSyncStorage{
 		buckets: map[string]bool{"mybucket": true},
 		objects: map[string][]byte{
-			// Match file (same)
-			"mybucket/match.txt": []byte("match"),
-			// Out of sync file (differs in CRC/size)
-			"mybucket/update.txt": []byte("oldval"),
-			// Extraneous file (should be deleted)
-			"mybucket/delete.txt": []byte("delete"),
+			"mybucket/match.txt":  []byte("match"),
+			"mybucket/update.txt": []byte("update"),
+			"mybucket/new.txt":    []byte("newfile"),
 		},
 		metas: map[string]s3.ObjectMeta{
 			"mybucket/match.txt":  {CRC32: 111},
-			"mybucket/update.txt": {CRC32: 999}, // different
-			"mybucket/delete.txt": {CRC32: 888},
+			"mybucket/update.txt": {CRC32: 222},
+			"mybucket/new.txt":    {CRC32: 333},
 		},
 		stagedObjects: make(map[string][]byte),
 		stagedMetas:   make(map[string]s3.ObjectMeta),
@@ -243,57 +242,96 @@ func TestSyncWorkerSynchronize(t *testing.T) {
 	}
 
 	client := internal_api.NewClient("token", 2*time.Second)
-	clusterMock := &mockSyncCluster{status: "SYNCING"}
-	// Override leader address returned by cluster
-	clusterMockLeAddr := leaderSrv.URL
-	
-	worker := NewSyncWorker(client, clusterMock, localStore, zap.NewNop(), 9001)
+	coord := NewSyncCoordinator(client, leaderStore, zap.NewNop())
 
-	// Create a wrapper of ClusterManager to inject leader address
+	err := coord.SyncFollower(context.Background(), "follower-1", followerSrv.URL)
+	if err != nil {
+		t.Fatalf("SyncFollower failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !getKeysCalled {
+		t.Error("Expected leader to call /internal/keys on follower")
+	}
+	if !prepareCalled {
+		t.Error("Expected leader to call /internal/prepare on follower")
+	}
+	if !commitCalled {
+		t.Error("Expected leader to call /internal/commit on follower")
+	}
+	if !syncDeleteCalled {
+		t.Error("Expected leader to call /internal/sync-delete on follower")
+	}
+
+	// Verify that the extraneous "delete.txt" was requested for deletion
+	foundDelete := false
+	for _, k := range deletedKeys {
+		if k.Bucket == "mybucket" && k.Key == "delete.txt" {
+			foundDelete = true
+		}
+	}
+	if !foundDelete {
+		t.Error("Expected delete.txt to be in sync-delete request")
+	}
+}
+
+// --- Follower SyncWorker test ---
+
+func TestSyncWorkerSynchronize(t *testing.T) {
+	var mu sync.Mutex
+	syncRequestCalled := false
+	var receivedNodeID string
+	var receivedInternalAddr string
+
+	// Leader mock HTTP server — receives sync-request from follower
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if r.URL.Path == "/internal/sync-request" {
+			syncRequestCalled = true
+			receivedNodeID = r.URL.Query().Get("node_id")
+			receivedInternalAddr = r.URL.Query().Get("internal_addr")
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer leaderSrv.Close()
+
+	client := internal_api.NewClient("token", 2*time.Second)
+	clusterMock := &mockSyncCluster{status: "SYNCING"}
+
+	worker := NewSyncWorker(client, clusterMock, zap.NewNop(), 9001)
+
+	// Inject leader address via wrapper
 	wrappedCluster := &testWrappedCluster{
 		ClusterManager: clusterMock,
-		leaderAddr:     clusterMockLeAddr,
+		leaderAddr:     leaderSrv.URL,
 	}
 	worker.cluster = wrappedCluster
 
-	// Run Synchronization
+	// Set POD_IP so selfInternalAddr is populated
+	t.Setenv("POD_IP", "10.0.0.5")
+	// Rebuild worker with POD_IP set
+	worker = NewSyncWorker(client, wrappedCluster, zap.NewNop(), 9001)
+
 	err := worker.Synchronize(context.Background())
 	if err != nil {
 		t.Fatalf("Synchronize failed: %v", err)
 	}
 
-	// Verify states
 	mu.Lock()
 	defer mu.Unlock()
 
-	if !syncStarted || !syncDone || !getKeysCalled {
-		t.Errorf("Expected sync endpoints to be called on leader: started=%t, keys=%t, done=%t", syncStarted, getKeysCalled, syncDone)
+	if !syncRequestCalled {
+		t.Error("Expected follower to call /internal/sync-request on leader")
 	}
-
-	localStore.mu.Lock()
-	defer localStore.mu.Unlock()
-
-	// Verify match.txt is untouched
-	if string(localStore.objects["mybucket/match.txt"]) != "match" {
-		t.Errorf("match.txt was modified unexpectedly")
+	if receivedNodeID != "follower-1" {
+		t.Errorf("Expected node_id=follower-1, got %s", receivedNodeID)
 	}
-
-	// Verify update.txt is updated to new value
-	if string(localStore.objects["mybucket/update.txt"]) != "update" {
-		t.Errorf("update.txt was not updated: %s", string(localStore.objects["mybucket/update.txt"]))
-	}
-	if localStore.metas["mybucket/update.txt"].CRC32 != 222 {
-		t.Errorf("update.txt metadata CRC was not updated")
-	}
-
-	// Verify new.txt is downloaded
-	if string(localStore.objects["mybucket/new.txt"]) != "newfile" {
-		t.Errorf("new.txt was not downloaded")
-	}
-
-	// Verify delete.txt is removed
-	if _, exists := localStore.objects["mybucket/delete.txt"]; exists {
-		t.Errorf("delete.txt was not removed")
+	if receivedInternalAddr != "http://10.0.0.5:9001" {
+		t.Errorf("Expected internal_addr=http://10.0.0.5:9001, got %s", receivedInternalAddr)
 	}
 }
 

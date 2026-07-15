@@ -57,6 +57,20 @@ func (m *mockReplicator) CommitAll(ctx context.Context, txID, bucket, key string
 }
 func (m *mockReplicator) AbortAll(ctx context.Context, txID string) map[string]error { return nil }
 
+type mockSyncCoordinator struct {
+	called       bool
+	nodeID       string
+	followerAddr string
+	err          error
+}
+
+func (m *mockSyncCoordinator) SyncFollower(ctx context.Context, nodeID, followerAddr string) error {
+	m.called = true
+	m.nodeID = nodeID
+	m.followerAddr = followerAddr
+	return m.err
+}
+
 type mockStorage struct {
 	buckets       map[string]bool
 	stagedObjects map[string][]byte
@@ -117,7 +131,10 @@ func (m *mockStorage) GetObject(bucket, key string) (io.ReadCloser, s3.ObjectMet
 func (m *mockStorage) GetObjectMeta(bucket, key string) (s3.ObjectMeta, error) {
 	return s3.ObjectMeta{ContentType: "text/plain"}, nil
 }
-func (m *mockStorage) DeleteObject(bucket, key string) error { return nil }
+func (m *mockStorage) DeleteObject(bucket, key string) error {
+	delete(m.committedKeys, bucket+"/"+key)
+	return nil
+}
 func (m *mockStorage) ListObjectsV2(bucket, prefix, delimiter, continuationToken string, maxKeys int) (s3.ListObjectsResult, error) {
 	return s3.ListObjectsResult{
 		Name: bucket,
@@ -306,5 +323,96 @@ func TestInternalS3ProxyForwarding(t *testing.T) {
 	}
 	if rec.Body.String() != "s3 response" {
 		t.Errorf("unexpected proxy response body: %q", rec.Body.String())
+	}
+}
+
+func TestInternalSyncRequestHandler(t *testing.T) {
+	store := &mockStorage{
+		buckets:       map[string]bool{"mybucket": true},
+		stagedObjects: make(map[string][]byte),
+		committedKeys: make(map[string]bool),
+		stagedMetas:   make(map[string]s3.ObjectMeta),
+		txs:           make(map[string]s3.Transaction),
+	}
+	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, &mockMetricsRecorder{}, zap.NewNop())
+	coord := &mockSyncCoordinator{}
+	svc.SetSyncCoordinator(coord)
+	h := NewHandler(store, svc, &mockCluster{status: "READY"}, nil, "secret-token", zap.NewNop())
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/sync-request?node_id=follower-1&internal_addr=http://10.0.0.5:9001", nil)
+	req.Header.Set("X-MicroS3-Token", "secret-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if !coord.called {
+		t.Error("expected SyncCoordinator.SyncFollower to be called")
+	}
+	if coord.nodeID != "follower-1" {
+		t.Errorf("expected node_id=follower-1, got %s", coord.nodeID)
+	}
+	if coord.followerAddr != "http://10.0.0.5:9001" {
+		t.Errorf("expected follower_addr=http://10.0.0.5:9001, got %s", coord.followerAddr)
+	}
+}
+
+func TestInternalSyncRequestMissingParams(t *testing.T) {
+	store := &mockStorage{buckets: make(map[string]bool)}
+	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, &mockMetricsRecorder{}, zap.NewNop())
+	h := NewHandler(store, svc, &mockCluster{status: "READY"}, nil, "secret-token", zap.NewNop())
+
+	// Missing internal_addr
+	req := httptest.NewRequest(http.MethodPost, "/internal/sync-request?node_id=follower-1", nil)
+	req.Header.Set("X-MicroS3-Token", "secret-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestInternalSyncDeleteHandler(t *testing.T) {
+	store := &mockStorage{
+		buckets:       map[string]bool{"mybucket": true},
+		stagedObjects: make(map[string][]byte),
+		committedKeys: map[string]bool{"mybucket/keep.txt": true, "mybucket/delete.txt": true},
+		stagedMetas:   make(map[string]s3.ObjectMeta),
+		txs:           make(map[string]s3.Transaction),
+	}
+	svc := s3app.NewService(store, &mockReplicator{}, &mockCluster{}, &mockMetricsRecorder{}, zap.NewNop())
+	h := NewHandler(store, svc, &mockCluster{status: "READY"}, nil, "secret-token", zap.NewNop())
+
+	deleteBody, _ := json.Marshal(struct {
+		Keys []KeyInfo `json:"keys"`
+	}{
+		Keys: []KeyInfo{
+			{Bucket: "mybucket", Key: "delete.txt"},
+			{Bucket: "mybucket", Key: "extra.txt"},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/sync-delete", bytes.NewReader(deleteBody))
+	req.Header.Set("X-MicroS3-Token", "secret-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify keys were deleted from committedKeys
+	if store.committedKeys["mybucket/delete.txt"] {
+		t.Error("expected delete.txt to be deleted")
+	}
+	if store.committedKeys["mybucket/extra.txt"] {
+		t.Error("expected extra.txt to be deleted")
+	}
+	if !store.committedKeys["mybucket/keep.txt"] {
+		t.Error("expected keep.txt to remain")
 	}
 }

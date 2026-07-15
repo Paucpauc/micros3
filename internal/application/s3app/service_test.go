@@ -256,8 +256,9 @@ func (m *mockReplicator) AbortAll(ctx context.Context, txID string) map[string]e
 // ClusterManager Mock
 
 type mockClusterManager struct {
-	followers []string
-	deadNodes []string
+	followers  []string
+	deadNodes  []string
+	aliveNodes map[string]string // nodeID -> internalAddr
 }
 
 func (m *mockClusterManager) NodeID() string                { return "node-1" }
@@ -268,9 +269,30 @@ func (m *mockClusterManager) Mode() string                  { return "static" }
 func (m *mockClusterManager) MarkDead(nodeID string) {
 	m.deadNodes = append(m.deadNodes, nodeID)
 }
-func (m *mockClusterManager) MarkAlive(nodeID, internalAddr string) {}
-func (m *mockClusterManager) Status() string                        { return "READY" }
-func (m *mockClusterManager) SetLocalStatus(status string)          {}
+func (m *mockClusterManager) MarkAlive(nodeID, internalAddr string) {
+	if m.aliveNodes == nil {
+		m.aliveNodes = make(map[string]string)
+	}
+	m.aliveNodes[nodeID] = internalAddr
+}
+func (m *mockClusterManager) Status() string               { return "READY" }
+func (m *mockClusterManager) SetLocalStatus(status string) {}
+
+// SyncCoordinator Mock
+
+type mockSyncCoordinator struct {
+	syncCalled bool
+	syncNodeID string
+	syncAddr   string
+	syncErr    error
+}
+
+func (m *mockSyncCoordinator) SyncFollower(ctx context.Context, nodeID, followerAddr string) error {
+	m.syncCalled = true
+	m.syncNodeID = nodeID
+	m.syncAddr = followerAddr
+	return m.syncErr
+}
 
 // MetricsRecorder Mock (no-op)
 
@@ -467,5 +489,78 @@ func TestCompleteMultipartUploadDeletesPartsOnTheFly(t *testing.T) {
 		if storage.deletedParts[i] != v {
 			t.Errorf("expected deleted part at index %d to be %d, got %d", i, v, storage.deletedParts[i])
 		}
+	}
+}
+
+func TestHandleSyncRequestSuccess(t *testing.T) {
+	storage := newMockStorage()
+	replicator := &mockReplicator{}
+	cluster := &mockClusterManager{}
+	service := NewService(storage, replicator, cluster, &mockMetricsRecorder{}, zap.NewNop())
+
+	coord := &mockSyncCoordinator{}
+	service.SetSyncCoordinator(coord)
+
+	err := service.HandleSyncRequest(context.Background(), "follower-1", "http://10.0.0.5:9001")
+	if err != nil {
+		t.Fatalf("HandleSyncRequest failed: %v", err)
+	}
+
+	if !coord.syncCalled {
+		t.Error("expected SyncCoordinator.SyncFollower to be called")
+	}
+	if coord.syncNodeID != "follower-1" {
+		t.Errorf("expected node_id=follower-1, got %s", coord.syncNodeID)
+	}
+	if coord.syncAddr != "http://10.0.0.5:9001" {
+		t.Errorf("expected follower_addr=http://10.0.0.5:9001, got %s", coord.syncAddr)
+	}
+
+	// Verify follower was marked alive
+	if cluster.aliveNodes["follower-1"] != "http://10.0.0.5:9001" {
+		t.Error("expected follower-1 to be marked alive with correct address")
+	}
+
+	// Verify writes are no longer blocked after sync
+	if service.IsWritesBlocked() {
+		t.Error("expected writes to be unblocked after sync completion")
+	}
+}
+
+func TestHandleSyncRequestNoCoordinator(t *testing.T) {
+	storage := newMockStorage()
+	replicator := &mockReplicator{}
+	cluster := &mockClusterManager{}
+	service := NewService(storage, replicator, cluster, &mockMetricsRecorder{}, zap.NewNop())
+
+	// No coordinator set
+	err := service.HandleSyncRequest(context.Background(), "follower-1", "http://10.0.0.5:9001")
+	if err == nil {
+		t.Fatal("expected error when sync coordinator is not configured")
+	}
+}
+
+func TestHandleSyncRequestCoordinatorError(t *testing.T) {
+	storage := newMockStorage()
+	replicator := &mockReplicator{}
+	cluster := &mockClusterManager{}
+	service := NewService(storage, replicator, cluster, &mockMetricsRecorder{}, zap.NewNop())
+
+	coord := &mockSyncCoordinator{syncErr: errors.New("network failure")}
+	service.SetSyncCoordinator(coord)
+
+	err := service.HandleSyncRequest(context.Background(), "follower-1", "http://10.0.0.5:9001")
+	if err == nil {
+		t.Fatal("expected error from coordinator failure")
+	}
+
+	// Verify follower was NOT marked alive
+	if _, exists := cluster.aliveNodes["follower-1"]; exists {
+		t.Error("expected follower to NOT be marked alive on sync failure")
+	}
+
+	// Verify writes are unblocked even on failure (lease ended)
+	if service.IsWritesBlocked() {
+		t.Error("expected writes to be unblocked after sync failure (lease should end)")
 	}
 }

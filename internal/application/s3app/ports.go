@@ -77,6 +77,14 @@ type Replicator interface {
 	AbortAll(ctx context.Context, txID string) map[string]error
 }
 
+// SyncCoordinator defines the interface for leader-driven synchronization.
+// When a follower requests sync, the leader uses this coordinator to drive
+// the entire process: query the follower's keys, push missing/updated
+// objects, and delete extraneous ones.
+type SyncCoordinator interface {
+	SyncFollower(ctx context.Context, nodeID, followerAddr string) error
+}
+
 // ClusterManager defines the interface for cluster membership and roles
 type ClusterManager interface {
 	NodeID() string

@@ -347,6 +347,63 @@ func (c *Client) SyncHeartbeat(ctx context.Context, targetAddr string, nodeID st
 	return nil
 }
 
+// SyncRequest is sent by a follower to the leader to signal that it wants to
+// be synchronized. The leader will then drive the sync process: query the
+// follower's keys, push missing/updated objects, and delete extraneous ones.
+func (c *Client) SyncRequest(ctx context.Context, targetAddr string, nodeID string, internalAddr string) error {
+	u := fmt.Sprintf("%s/internal/sync-request?node_id=%s", targetAddr, url.QueryEscape(nodeID))
+	if internalAddr != "" {
+		u += "&internal_addr=" + url.QueryEscape(internalAddr)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("sync-request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// SyncDelete is sent by the leader to a follower to remove extraneous keys
+// that exist on the follower but not on the leader.
+func (c *Client) SyncDelete(ctx context.Context, targetAddr string, keys []KeyInfo) error {
+	reqBody, err := json.Marshal(struct {
+		Keys []KeyInfo `json:"keys"`
+	}{Keys: keys})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetAddr+"/internal/sync-delete", bytes.NewReader(reqBody))
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("sync-delete failed on %s with status %d: %s", targetAddr, resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 func (c *Client) SetStatus(ctx context.Context, targetAddr string, status string) error {
 	url := fmt.Sprintf("%s/internal/set-status?status=%s", targetAddr, url.QueryEscape(status))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)

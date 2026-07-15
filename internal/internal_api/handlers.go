@@ -51,6 +51,8 @@ func NewHandler(
 	mux.HandleFunc("/internal/sync-start", h.handleSyncStart)
 	mux.HandleFunc("/internal/sync-done", h.handleSyncDone)
 	mux.HandleFunc("/internal/sync-heartbeat", h.handleSyncHeartbeat)
+	mux.HandleFunc("/internal/sync-request", h.handleSyncRequest)
+	mux.HandleFunc("/internal/sync-delete", h.handleSyncDelete)
 	mux.HandleFunc("/internal/s3-proxy", h.handleS3Proxy)
 	mux.HandleFunc("/internal/set-status", h.handleSetStatus)
 
@@ -433,6 +435,84 @@ func (h *InternalHandler) handleSyncHeartbeat(w http.ResponseWriter, r *http.Req
 	nodeID := r.URL.Query().Get("node_id")
 	h.service.HeartbeatSyncLease(nodeID)
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleSyncRequest is received by the leader when a follower wants to
+// synchronize. The leader drives the entire sync process: it queries the
+// follower's keys, pushes missing/updated objects, and deletes extraneous
+// ones. The HTTP response is sent only after the sync completes (or fails).
+func (h *InternalHandler) handleSyncRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	nodeID := r.URL.Query().Get("node_id")
+	internalAddr := r.URL.Query().Get("internal_addr")
+	if nodeID == "" || internalAddr == "" {
+		http.Error(w, "missing node_id or internal_addr parameter", http.StatusBadRequest)
+		return
+	}
+
+	reqID := s3.GetRequestID(r.Context())
+	h.logger.Info("Received sync request from follower",
+		zap.String("node_id", nodeID),
+		zap.String("internal_addr", internalAddr),
+		zap.String("request_id", reqID),
+	)
+
+	if err := h.service.HandleSyncRequest(r.Context(), nodeID, internalAddr); err != nil {
+		h.logger.Error("Leader-driven sync failed",
+			zap.String("node_id", nodeID),
+			zap.String("internal_addr", internalAddr),
+			zap.Error(err),
+			zap.String("request_id", reqID),
+		)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	h.logger.Info("Leader-driven sync completed successfully",
+		zap.String("node_id", nodeID),
+		zap.String("request_id", reqID),
+	)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleSyncDelete is received by a follower when the leader instructs it to
+// remove extraneous keys that exist on the follower but not on the leader.
+func (h *InternalHandler) handleSyncDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Keys []KeyInfo `json:"keys"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	reqID := s3.GetRequestID(r.Context())
+	h.logger.Info("Received sync-delete request",
+		zap.Int("keys_count", len(body.Keys)),
+		zap.String("request_id", reqID),
+	)
+
+	for _, k := range body.Keys {
+		if err := h.storage.DeleteObject(k.Bucket, k.Key); err != nil {
+			h.logger.Warn("Failed to delete extraneous object during sync",
+				zap.String("bucket", k.Bucket),
+				zap.String("key", k.Key),
+				zap.Error(err),
+			)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "DELETED"})
 }
 
 func (h *InternalHandler) handleSetStatus(w http.ResponseWriter, r *http.Request) {
