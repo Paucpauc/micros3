@@ -239,6 +239,13 @@ func (m *StaticClusterManager) RegisterFollower(nodeID, internalAddr string) {
 	)
 }
 
+// RefreshFollowers is a no-op for the static cluster manager: all nodes are
+// already known from configuration and are discovered at startup. The
+// background heartbeat loop keeps statuses up to date.
+func (m *StaticClusterManager) RefreshFollowers(ctx context.Context) {
+	// For static mode, all nodes are pre-configured — nothing to discover.
+}
+
 func (m *StaticClusterManager) Status() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

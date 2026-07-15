@@ -292,6 +292,7 @@ func (m *mockClusterManager) MarkAlive(nodeID, internalAddr string) {
 	m.aliveNodes[nodeID] = internalAddr
 }
 func (m *mockClusterManager) RegisterFollower(nodeID, internalAddr string) {}
+func (m *mockClusterManager) RefreshFollowers(_ context.Context)           {}
 func (m *mockClusterManager) Status() string                               { return "READY" }
 func (m *mockClusterManager) SetLocalStatus(status string)                 {}
 

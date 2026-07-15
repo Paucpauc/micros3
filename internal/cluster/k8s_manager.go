@@ -346,6 +346,14 @@ func (m *K8sClusterManager) RegisterFollower(nodeID, internalAddr string) {
 	)
 }
 
+// RefreshFollowers triggers an immediate discovery of all cluster nodes via
+// the K8s Endpoints API, bypassing the background loop timer. It is called
+// on the leader before processing a sync request so that KnownFollowers()
+// already contains all nodes that are up and holding EC shards.
+func (m *K8sClusterManager) RefreshFollowers(ctx context.Context) {
+	m.discoverAndCheckFollowers(ctx)
+}
+
 func (m *K8sClusterManager) Status() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

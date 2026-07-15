@@ -132,6 +132,12 @@ type ClusterManager interface {
 	// KnownFollowers() includes it and ReadECObject can query it for EC
 	// shards during the sync process.
 	RegisterFollower(nodeID, internalAddr string)
+	// RefreshFollowers triggers an immediate discovery of all cluster nodes,
+	// bypassing the background loop timer. This is called on the leader
+	// before processing a sync request so that KnownFollowers() already
+	// contains all nodes that are up and holding EC shards — including
+	// followers that haven't sent a sync request yet.
+	RefreshFollowers(ctx context.Context)
 	Status() string
 	SetLocalStatus(status string)
 }

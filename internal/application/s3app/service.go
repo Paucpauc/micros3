@@ -178,11 +178,19 @@ func (s *Service) HandleSyncRequest(ctx context.Context, nodeID, followerAddr st
 		s.EndSyncLease(nodeID)
 	}()
 
-	// Register the follower in the cluster state before sync begins.
-	// This ensures the follower is included in KnownFollowers() so that
-	// ReadECObject can query it for EC shards during the sync process,
-	// even if the discovery loop hasn't added it to followerStates yet
-	// (e.g. right after a full cluster restart).
+	// Trigger an immediate node discovery so KnownFollowers() contains ALL
+	// nodes that are currently up — not just the requesting follower.
+	// After a full cluster restart the background discovery loop may not
+	// have run yet, so followerStates is empty (or stale). Without this
+	// refresh, ReadECObject would only see the leader + the single
+	// requesting follower, giving it far fewer shards than needed (e.g.
+	// 1-2 out of the required k=4) and failing with "insufficient shards".
+	s.cluster.RefreshFollowers(ctx)
+
+	// Also explicitly register the requesting follower so that even if
+	// the K8s Endpoints API hasn't listed it yet (e.g. pod is still
+	// warming up), it is included in KnownFollowers() for EC shard
+	// discovery during the sync process.
 	s.cluster.RegisterFollower(nodeID, followerAddr)
 
 	// Drive the sync process from the leader side

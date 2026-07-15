@@ -1,6 +1,8 @@
 package cluster
 
 import (
+	"context"
+
 	"github.com/paucpauc/micros3/internal/application/s3app"
 )
 
@@ -51,6 +53,10 @@ func (m *StandaloneClusterManager) MarkAlive(nodeID, internalAddr string) {
 
 func (m *StandaloneClusterManager) RegisterFollower(nodeID, internalAddr string) {
 	// Standalone mode has no followers to register
+}
+
+func (m *StandaloneClusterManager) RefreshFollowers(_ context.Context) {
+	// Standalone mode has no followers to discover
 }
 
 func (m *StandaloneClusterManager) Status() string {

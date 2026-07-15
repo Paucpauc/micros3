@@ -32,6 +32,7 @@ func (m *mockCluster) Mode() string                                 { return "st
 func (m *mockCluster) MarkDead(nodeID string)                       {}
 func (m *mockCluster) MarkAlive(nodeID, internalAddr string)        {}
 func (m *mockCluster) RegisterFollower(nodeID, internalAddr string) {}
+func (m *mockCluster) RefreshFollowers(_ context.Context)           {}
 func (m *mockCluster) Status() string                               { return m.status }
 func (m *mockCluster) SetLocalStatus(status string)                 { m.status = status }
 
