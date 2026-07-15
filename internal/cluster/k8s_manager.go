@@ -82,20 +82,20 @@ type EndpointsResponse struct {
 }
 
 type K8sClusterManager struct {
-	localNodeID   string
-	namespace     string
-	leaseName     string
-	serviceName   string
-	internalPort  int
-	k8sCfg        config.K8sConfig
-	healthCfg     config.HealthConfig
-	client        *internal_api.Client
-	logger        *zap.Logger
+	localNodeID  string
+	namespace    string
+	leaseName    string
+	serviceName  string
+	internalPort int
+	k8sCfg       config.K8sConfig
+	healthCfg    config.HealthConfig
+	client       *internal_api.Client
+	logger       *zap.Logger
 
-	apiURL        string
-	token         string
-	k8sClient     *http.Client
-	cancelLoop    context.CancelFunc
+	apiURL     string
+	token      string
+	k8sClient  *http.Client
+	cancelLoop context.CancelFunc
 
 	mu               sync.RWMutex
 	isLeaderFlag     bool
@@ -105,6 +105,7 @@ type K8sClusterManager struct {
 	followerStates   map[string]*nodeState
 	lastLeaseRenewal time.Time
 	leaseDuration    time.Duration
+	lastAppliedRole  string // last role value written to the pod label
 }
 
 func NewK8sClusterManager(
@@ -188,12 +189,16 @@ func (m *K8sClusterManager) Start(ctx context.Context) {
 	loopCtx, cancel := context.WithCancel(ctx)
 	m.mu.Lock()
 	m.cancelLoop = cancel
+	// Track the last role we applied to the pod label so we only patch the
+	// pod when the role actually changes. This avoids a race where a
+	// proactive "follower" patch overwrites a just-applied "leader" patch.
+	m.lastAppliedRole = ""
 	m.mu.Unlock()
 
-	// Set initial status label to follower proactively
-	go m.updatePodLabel(loopCtx, false)
-
-	// Start lease leader election loop and discovery
+	// Start lease leader election loop and discovery.
+	// The pod label is set exclusively by the leader-election loop based on
+	// the actual lease state — no proactive "follower" patch is issued here
+	// to avoid racing with the first lease acquisition.
 	go m.runLeaderElectionLoop(loopCtx)
 	go m.runDiscoveryLoop(loopCtx)
 }
@@ -312,7 +317,7 @@ func (m *K8sClusterManager) makeK8sRequest(ctx context.Context, method, urlPath 
 
 func (m *K8sClusterManager) runLeaderElectionLoop(ctx context.Context) {
 	m.logger.Info("Starting leader election Lease loop")
-	
+
 	// Default values
 	leaseDuration := 15 * time.Second
 	retryPeriod := 2 * time.Second
@@ -368,7 +373,7 @@ func (m *K8sClusterManager) tryAcquireOrRenewLease(ctx context.Context, leaseDur
 
 	now := time.Now().UTC()
 	isCurrentHolder := lease.Spec.HolderIdentity == m.localNodeID
-	
+
 	expiryTime := time.Time(lease.Spec.RenewTime).Add(time.Duration(lease.Spec.LeaseDurationSeconds) * time.Second)
 	expired := now.After(expiryTime)
 
@@ -378,21 +383,21 @@ func (m *K8sClusterManager) tryAcquireOrRenewLease(ctx context.Context, leaseDur
 	} else {
 		// Someone else is the leader
 		m.mu.Lock()
-		wasLeader := m.isLeaderFlag
 		if m.isLeaderFlag {
 			m.logger.Info("Lost leadership, transitioning to follower")
 		}
 		m.isLeaderFlag = false
-		
+
 		// Leader address calculation
 		// If we are a follower, leader internal address is http://{leader-id}.{service-name}.{namespace}.svc.cluster.local:{port}
 		// Since K8s DNS resolves pod hostnames of headless services like this!
 		m.leaderAddress = fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:%d", lease.Spec.HolderIdentity, m.serviceName, m.namespace, m.internalPort)
 		m.mu.Unlock()
 
-		if wasLeader {
-			go m.updatePodLabel(context.Background(), false)
-		}
+		// Always ensure the pod label reflects follower status.
+		// updatePodLabel is idempotent: it skips the API call if the label
+		// is already "follower", so this is safe to call on every tick.
+		go m.updatePodLabel(context.Background(), false)
 	}
 }
 
@@ -489,6 +494,16 @@ func (m *K8sClusterManager) updatePodLabel(ctx context.Context, isLeader bool) {
 		roleVal = "leader"
 	}
 
+	// Skip the API call if the role hasn't changed since the last successful
+	// patch. This makes updatePodLabel idempotent and prevents redundant
+	// patches (and races) on every lease-renew tick.
+	m.mu.Lock()
+	if m.lastAppliedRole == roleVal {
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Unlock()
+
 	podPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s", m.namespace, m.localNodeID)
 	payload := map[string]interface{}{
 		"metadata": map[string]interface{}{
@@ -521,6 +536,9 @@ func (m *K8sClusterManager) updatePodLabel(ctx context.Context, isLeader bool) {
 		respBody, _ := io.ReadAll(resp.Body)
 		m.logger.Warn("Patch pod label returned error", zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)))
 	} else {
+		m.mu.Lock()
+		m.lastAppliedRole = roleVal
+		m.mu.Unlock()
 		m.logger.Info("Successfully updated pod role label", zap.String("role", roleVal))
 	}
 }
