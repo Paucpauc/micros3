@@ -41,3 +41,11 @@ data:
     log:
       level: {{ .Values.config.log.level | quote }}
       format: {{ .Values.config.log.format | quote }}
+    ec:
+      enabled: {{ .Values.config.ec.enabled }}
+      k: {{ .Values.config.ec.k }}
+      m: {{ .Values.config.ec.m }}
+      min_object_size: {{ .Values.config.ec.minObjectSize }}
+      min_age: {{ .Values.config.ec.minAge | quote }}
+      convert_interval: {{ .Values.config.ec.convertInterval | quote }}
+      restore_interval: {{ .Values.config.ec.restoreInterval | quote }}

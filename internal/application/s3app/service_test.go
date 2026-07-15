@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -219,6 +220,19 @@ func (m *mockStorage) GetMultipartUpload(bucket, uploadID string) (s3.MultipartU
 func (m *mockStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error) {
 	return nil, nil
 }
+
+// EC shard no-op stubs (EC is not exercised in unit tests).
+func (m *mockStorage) PutECShard(bucket, key string, shardIndex int, r io.Reader, size int64, meta s3.ObjectMeta) error {
+	return nil
+}
+func (m *mockStorage) GetECShard(bucket, key string, shardIndex int) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("no EC shard")
+}
+func (m *mockStorage) HasECShard(bucket, key string, shardIndex int) (bool, error) {
+	return false, nil
+}
+func (m *mockStorage) DeleteECShard(bucket, key string, shardIndex int) error        { return nil }
+func (m *mockStorage) UpdateObjectMeta(bucket, key string, meta s3.ObjectMeta) error { return nil }
 
 // Replicator Mock
 

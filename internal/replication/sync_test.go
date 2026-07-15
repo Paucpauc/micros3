@@ -165,6 +165,19 @@ func (m *mockSyncStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpl
 	return nil, nil
 }
 
+// EC shard no-op stubs (EC is not exercised in unit tests).
+func (m *mockSyncStorage) PutECShard(bucket, key string, shardIndex int, r io.Reader, size int64, meta s3.ObjectMeta) error {
+	return nil
+}
+func (m *mockSyncStorage) GetECShard(bucket, key string, shardIndex int) (io.ReadCloser, error) {
+	return nil, io.ErrUnexpectedEOF
+}
+func (m *mockSyncStorage) HasECShard(bucket, key string, shardIndex int) (bool, error) {
+	return false, nil
+}
+func (m *mockSyncStorage) DeleteECShard(bucket, key string, shardIndex int) error        { return nil }
+func (m *mockSyncStorage) UpdateObjectMeta(bucket, key string, meta s3.ObjectMeta) error { return nil }
+
 // --- Leader-driven SyncCoordinator test ---
 
 func TestSyncCoordinatorSyncFollower(t *testing.T) {

@@ -28,7 +28,7 @@ type FilesystemRepository struct {
 
 func NewFilesystemRepository(root string) (*FilesystemRepository, error) {
 	// Ensure directories exist
-	for _, dir := range []string{"data", "meta", "staging", "uploads"} {
+	for _, dir := range []string{"data", "meta", "staging", "uploads", "ecdata"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
 			return nil, fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
@@ -55,6 +55,16 @@ func (r *FilesystemRepository) uploadsDir(bucket string) string {
 
 func (r *FilesystemRepository) uploadSessionDir(bucket, uploadID string) string {
 	return filepath.Join(r.root, "uploads", bucket, uploadID)
+}
+
+// ecShardDir returns the directory holding EC shards for a given bucket.
+func (r *FilesystemRepository) ecShardDir(bucket string) string {
+	return filepath.Join(r.root, "ecdata", bucket)
+}
+
+// ecShardPath returns the path to a specific EC shard file.
+func (r *FilesystemRepository) ecShardPath(bucket, key string, shardIndex int) string {
+	return filepath.Join(r.ecShardDir(bucket), fmt.Sprintf("%s.shard.%d", key, shardIndex))
 }
 
 // --- Bucket Operations ---
@@ -223,6 +233,10 @@ func (r *FilesystemRepository) CommitTransaction(txID, bucket, key string) (s3.O
 			return s3.ObjectMeta{}, err
 		}
 
+		// If the object previously existed in EC mode, remove its old
+		// shards — the new PUT stores a full replica.
+		_ = r.DeleteAllECShards(bucket, key)
+
 		// Move meta
 		targetMeta := filepath.Join(r.metaDir(bucket), key+".json")
 		if err := os.MkdirAll(filepath.Dir(targetMeta), 0755); err != nil {
@@ -246,6 +260,9 @@ func (r *FilesystemRepository) CommitTransaction(txID, bucket, key string) (s3.O
 		if err := os.Remove(targetMeta); err != nil && !os.IsNotExist(err) {
 			return s3.ObjectMeta{}, err
 		}
+
+		// Remove any EC shards for the deleted object.
+		_ = r.DeleteAllECShards(bucket, key)
 
 		// Clean up empty parent directories
 		r.cleanEmptyDirs(filepath.Dir(targetData), r.dataDir(bucket))
@@ -294,6 +311,19 @@ func (r *FilesystemRepository) GetObject(bucket, key string) (io.ReadCloser, s3.
 		return nil, s3.ObjectMeta{}, err
 	}
 
+	// For EC objects the full data is not stored locally; only one shard is.
+	// Return the local shard so that the internal API can serve it to the
+	// leader for reconstruction. Full reconstruction happens in the service
+	// layer.
+	if meta.IsEC() {
+		shardPath := r.ecShardPath(bucket, key, meta.ECChunkIndex)
+		f, err := os.Open(shardPath)
+		if err != nil {
+			return nil, s3.ObjectMeta{}, err
+		}
+		return f, meta, nil
+	}
+
 	dataPath := filepath.Join(r.dataDir(bucket), key)
 	f, err := os.Open(dataPath)
 	if err != nil {
@@ -327,6 +357,9 @@ func (r *FilesystemRepository) DeleteObject(bucket, key string) error {
 	if err := os.Remove(targetMeta); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+
+	// Remove any EC shards that may exist for this object.
+	_ = r.DeleteAllECShards(bucket, key)
 
 	r.cleanEmptyDirs(filepath.Dir(targetData), r.dataDir(bucket))
 	r.cleanEmptyDirs(filepath.Dir(targetMeta), r.metaDir(bucket))
@@ -430,6 +463,117 @@ func (r *FilesystemRepository) ListObjectsV2(bucket, prefix, delimiter, continua
 	result.KeyCount = len(result.Contents) + len(result.CommonPrefixes)
 
 	return result, nil
+}
+
+// --- EC Shard Operations ---
+
+// PutECShard writes a single erasure-coded shard to disk and updates the
+// object metadata file with the provided meta (which must carry the EC
+// parameters and the local shard index).
+func (r *FilesystemRepository) PutECShard(bucket, key string, shardIndex int, reader io.Reader, size int64, meta s3.ObjectMeta) error {
+	shardPath := r.ecShardPath(bucket, key, shardIndex)
+	if err := os.MkdirAll(filepath.Dir(shardPath), 0755); err != nil {
+		return err
+	}
+
+	tmpName := fmt.Sprintf("shard.tmp.%s", uuid.New().String())
+	tmpPath := shardPath + "." + tmpName
+
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		f.Close()
+		os.Remove(tmpPath)
+	}()
+
+	written, err := io.Copy(f, reader)
+	if err != nil {
+		return err
+	}
+	if size >= 0 && written != size {
+		return fmt.Errorf("ec shard size mismatch: expected %d, got %d", size, written)
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, shardPath); err != nil {
+		return err
+	}
+	if err := r.syncDir(filepath.Dir(shardPath)); err != nil {
+		return err
+	}
+
+	// Update metadata file.
+	return r.UpdateObjectMeta(bucket, key, meta)
+}
+
+// GetECShard opens a single EC shard for reading.
+func (r *FilesystemRepository) GetECShard(bucket, key string, shardIndex int) (io.ReadCloser, error) {
+	f, err := os.Open(r.ecShardPath(bucket, key, shardIndex))
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// HasECShard reports whether a shard exists on the local node.
+func (r *FilesystemRepository) HasECShard(bucket, key string, shardIndex int) (bool, error) {
+	_, err := os.Stat(r.ecShardPath(bucket, key, shardIndex))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// DeleteECShard removes a single EC shard from disk.
+func (r *FilesystemRepository) DeleteECShard(bucket, key string, shardIndex int) error {
+	shardPath := r.ecShardPath(bucket, key, shardIndex)
+	if err := os.Remove(shardPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	r.cleanEmptyDirs(filepath.Dir(shardPath), r.ecShardDir(bucket))
+	return nil
+}
+
+// UpdateObjectMeta overwrites the metadata file for an existing object.
+func (r *FilesystemRepository) UpdateObjectMeta(bucket, key string, meta s3.ObjectMeta) error {
+	metaPath := filepath.Join(r.metaDir(bucket), key+".json")
+	if err := os.MkdirAll(filepath.Dir(metaPath), 0755); err != nil {
+		return err
+	}
+	if err := r.writeJSON(metaPath, meta); err != nil {
+		return err
+	}
+	return r.syncDir(filepath.Dir(metaPath))
+}
+
+// DeleteAllECShards removes every EC shard for a given object (used when
+// converting back to replica or deleting an EC object).
+func (r *FilesystemRepository) DeleteAllECShards(bucket, key string) error {
+	dir := r.ecShardDir(bucket)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	prefix := key + ".shard."
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+	r.cleanEmptyDirs(dir, r.ecShardDir(bucket))
+	return nil
 }
 
 // --- Multipart Upload Operations ---

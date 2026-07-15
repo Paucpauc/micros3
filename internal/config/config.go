@@ -99,6 +99,31 @@ type SyncConfig struct {
 	AllowLocalReads    bool   `yaml:"allow_local_reads"`
 }
 
+// ECConfig configures erasure-coding (Reed-Solomon) background conversion.
+type ECConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// K is the number of data shards.
+	K int `yaml:"k"`
+	// M is the number of parity shards.
+	M int `yaml:"m"`
+	// MinObjectSize is the minimum object size (in bytes) eligible for EC
+	// conversion. Objects smaller than this stay as full replicas.
+	MinObjectSize int64 `yaml:"min_object_size"`
+	// MinAge is the minimum age of an object before it is considered for
+	// conversion (prevents converting objects that are still being written
+	// or are very new).
+	MinAge    time.Duration `yaml:"-"`
+	MinAgeStr string        `yaml:"min_age"`
+	// ConvertInterval is how often the background converter scans for
+	// eligible replica objects.
+	ConvertInterval    time.Duration `yaml:"-"`
+	ConvertIntervalStr string        `yaml:"convert_interval"`
+	// RestoreInterval is how often the background restorer scans for
+	// degraded EC objects that need repair.
+	RestoreInterval    time.Duration `yaml:"-"`
+	RestoreIntervalStr string        `yaml:"restore_interval"`
+}
+
 type HealthConfig struct {
 	Interval    time.Duration `yaml:"-"`
 	Timeout     time.Duration `yaml:"-"`
@@ -124,6 +149,7 @@ type Config struct {
 	Sync      SyncConfig      `yaml:"sync"`
 	Health    HealthConfig    `yaml:"health"`
 	Log       LogConfig       `yaml:"log"`
+	EC        ECConfig        `yaml:"ec"`
 }
 
 // DefaultConfig returns a configuration with default values
@@ -178,6 +204,15 @@ func DefaultConfig() *Config {
 		Log: LogConfig{
 			Level:  "info",
 			Format: "json",
+		},
+		EC: ECConfig{
+			Enabled:            false,
+			K:                  3,
+			M:                  2,
+			MinObjectSize:      1 << 20, // 1 MB
+			MinAgeStr:          "10m",
+			ConvertIntervalStr: "5m",
+			RestoreIntervalStr: "5m",
 		},
 	}
 }
@@ -304,6 +339,35 @@ func (c *Config) OverrideWithEnv() {
 		}
 		c.S3.Credentials[0].SecretKey = val
 	}
+
+	// EC configuration overrides
+	if val := os.Getenv("MICROS3_EC_ENABLED"); val != "" {
+		c.EC.Enabled = strings.ToLower(val) == "true"
+	}
+	if val := os.Getenv("MICROS3_EC_K"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			c.EC.K = n
+		}
+	}
+	if val := os.Getenv("MICROS3_EC_M"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			c.EC.M = n
+		}
+	}
+	if val := os.Getenv("MICROS3_EC_MIN_OBJECT_SIZE"); val != "" {
+		if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+			c.EC.MinObjectSize = n
+		}
+	}
+	if val := os.Getenv("MICROS3_EC_MIN_AGE"); val != "" {
+		c.EC.MinAgeStr = val
+	}
+	if val := os.Getenv("MICROS3_EC_CONVERT_INTERVAL"); val != "" {
+		c.EC.ConvertIntervalStr = val
+	}
+	if val := os.Getenv("MICROS3_EC_RESTORE_INTERVAL"); val != "" {
+		c.EC.RestoreIntervalStr = val
+	}
 }
 
 func (c *Config) parseDurations() error {
@@ -328,6 +392,15 @@ func (c *Config) parseDurations() error {
 	}
 	if c.Health.Timeout, err = time.ParseDuration(c.Health.TimeoutStr); err != nil {
 		return fmt.Errorf("invalid health.timeout: %w", err)
+	}
+	if c.EC.MinAge, err = time.ParseDuration(c.EC.MinAgeStr); err != nil {
+		return fmt.Errorf("invalid ec.min_age: %w", err)
+	}
+	if c.EC.ConvertInterval, err = time.ParseDuration(c.EC.ConvertIntervalStr); err != nil {
+		return fmt.Errorf("invalid ec.convert_interval: %w", err)
+	}
+	if c.EC.RestoreInterval, err = time.ParseDuration(c.EC.RestoreIntervalStr); err != nil {
+		return fmt.Errorf("invalid ec.restore_interval: %w", err)
 	}
 	return nil
 }
@@ -369,6 +442,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Sync.WriteBlockBehavior != "reject" && c.Sync.WriteBlockBehavior != "wait" {
 		return fmt.Errorf("invalid sync.write_block_behavior: %s, must be 'reject' or 'wait'", c.Sync.WriteBlockBehavior)
+	}
+
+	if c.EC.Enabled {
+		if c.EC.K < 1 {
+			return fmt.Errorf("invalid ec.k: must be >= 1")
+		}
+		if c.EC.M < 1 {
+			return fmt.Errorf("invalid ec.m: must be >= 1")
+		}
+		if c.EC.K+c.EC.M > 256 {
+			return fmt.Errorf("invalid ec.k+ec.m: must be <= 256")
+		}
+		if c.EC.MinObjectSize < 0 {
+			return fmt.Errorf("invalid ec.min_object_size: must be >= 0")
+		}
 	}
 
 	return nil

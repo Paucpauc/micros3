@@ -29,6 +29,17 @@ type StorageRepository interface {
 	DeleteObject(bucket, key string) error
 	ListObjectsV2(bucket, prefix, delimiter, continuationToken string, maxKeys int) (s3.ListObjectsResult, error)
 
+	// EC shard operations. These are used when an object has been converted
+	// from replica to erasure-coded storage. Each node stores exactly one
+	// shard (indexed by ECChunkIndex in the metadata) plus the full metadata.
+	PutECShard(bucket, key string, shardIndex int, r io.Reader, size int64, meta s3.ObjectMeta) error
+	GetECShard(bucket, key string, shardIndex int) (io.ReadCloser, error)
+	HasECShard(bucket, key string, shardIndex int) (bool, error)
+	DeleteECShard(bucket, key string, shardIndex int) error
+	// UpdateObjectMeta overwrites the metadata file for an existing object
+	// (used when converting replica -> EC and vice versa).
+	UpdateObjectMeta(bucket, key string, meta s3.ObjectMeta) error
+
 	// Multipart Upload operations
 	CreateMultipartUpload(bucket, key string) (string, error)
 	SaveMultipartPart(bucket, uploadID string, partNum int, r io.Reader) (s3.UploadPart, error)
@@ -83,6 +94,12 @@ type Replicator interface {
 // objects, and delete extraneous ones.
 type SyncCoordinator interface {
 	SyncFollower(ctx context.Context, nodeID, followerAddr string) error
+}
+
+// ECReader reconstructs object data from erasure-coded shards. The service
+// uses it transparently in GetObject when the object's StorageMode is EC.
+type ECReader interface {
+	ReadECObject(ctx context.Context, bucket, key string) (io.ReadCloser, s3.ObjectMeta, error)
 }
 
 // ClusterManager defines the interface for cluster membership and roles

@@ -14,11 +14,13 @@ import (
 	"github.com/paucpauc/micros3/internal/application/s3app"
 	"github.com/paucpauc/micros3/internal/cluster"
 	"github.com/paucpauc/micros3/internal/config"
+	eccodec "github.com/paucpauc/micros3/internal/infrastructure/storage/ec"
 	"github.com/paucpauc/micros3/internal/infrastructure/storage/fs"
 	"github.com/paucpauc/micros3/internal/internal_api"
 	"github.com/paucpauc/micros3/internal/metrics"
 	"github.com/paucpauc/micros3/internal/presentation/s3api"
 	"github.com/paucpauc/micros3/internal/replication"
+	ecrepl "github.com/paucpauc/micros3/internal/replication/ec"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -97,6 +99,42 @@ func main() {
 	// follower requests synchronization)
 	syncCoordinator := replication.NewSyncCoordinator(apiClient, storageRepo, logger)
 	svc.SetSyncCoordinator(syncCoordinator)
+
+	// 5b. Initialize Erasure Coding manager (if enabled).
+	// The EC manager runs on the leader and handles background conversion
+	// of replica objects into erasure-coded shards, read reconstruction,
+	// and shard repair. It is injected into the service so that GetObject
+	// can transparently reconstruct EC objects.
+	if cfg.EC.Enabled {
+		ecCodec, err := eccodec.NewCodec(cfg.EC.K, cfg.EC.M)
+		if err != nil {
+			logger.Fatal("Failed to create EC codec", zap.Error(err))
+		}
+		ecMgr := ecrepl.NewManager(
+			apiClient,
+			storageRepo,
+			clusterMgr,
+			ecCodec,
+			cfg.EC.MinAge,
+			cfg.EC.MinObjectSize,
+			logger,
+		)
+		svc.SetECReader(ecMgr)
+
+		logger.Info("Erasure coding enabled",
+			zap.Int("k", cfg.EC.K),
+			zap.Int("m", cfg.EC.M),
+			zap.Int64("min_object_size", cfg.EC.MinObjectSize),
+			zap.Duration("min_age", cfg.EC.MinAge),
+		)
+
+		// Start background loops (convert + repair). They self-check
+		// IsLeader() on every tick, so they are safe to start on all nodes.
+		ecMgr.StartConvertLoop(context.Background(), cfg.EC.ConvertInterval)
+		ecMgr.StartRepairLoop(context.Background(), cfg.EC.RestoreInterval)
+	} else {
+		logger.Info("Erasure coding disabled")
+	}
 
 	// 6. Initialize Auth Validator (if credentials are set)
 	var authValidator *s3api.AuthValidator

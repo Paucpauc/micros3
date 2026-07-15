@@ -405,8 +405,8 @@ func (c *Client) SyncDelete(ctx context.Context, targetAddr string, keys []KeyIn
 }
 
 func (c *Client) SetStatus(ctx context.Context, targetAddr string, status string) error {
-	url := fmt.Sprintf("%s/internal/set-status?status=%s", targetAddr, url.QueryEscape(status))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	u := fmt.Sprintf("%s/internal/set-status?status=%s", targetAddr, url.QueryEscape(status))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
 	if err != nil {
 		return err
 	}
@@ -420,6 +420,134 @@ func (c *Client) SetStatus(ctx context.Context, targetAddr string, status string
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("set-status failed with status: %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// --- EC (Erasure Coding) client methods ---
+
+// GetECMeta fetches the object metadata (including EC info) from a remote
+// node. The leader broadcasts this to all nodes to discover which shards
+// each node holds.
+func (c *Client) GetECMeta(ctx context.Context, targetAddr, bucket, key string) (s3.ObjectMeta, error) {
+	u := fmt.Sprintf("%s/internal/ec-meta?bucket=%s&key=%s", targetAddr, url.QueryEscape(bucket), url.QueryEscape(key))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return s3.ObjectMeta{}, err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return s3.ObjectMeta{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return s3.ObjectMeta{}, fmt.Errorf("ec-meta failed on %s with status %d", targetAddr, resp.StatusCode)
+	}
+
+	var meta s3.ObjectMeta
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		return s3.ObjectMeta{}, err
+	}
+	return meta, nil
+}
+
+// GetECShard downloads a specific EC shard from a remote node.
+func (c *Client) GetECShard(ctx context.Context, targetAddr, bucket, key string, shardIndex int) (io.ReadCloser, int64, error) {
+	cancelCtx, cancel := context.WithCancel(ctx)
+
+	u := fmt.Sprintf("%s/internal/ec-shard?bucket=%s&key=%s&shard_index=%d",
+		targetAddr, url.QueryEscape(bucket), url.QueryEscape(key), shardIndex)
+	req, err := http.NewRequestWithContext(cancelCtx, http.MethodGet, u, nil)
+	if err != nil {
+		cancel()
+		return nil, 0, err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		cancel()
+		return nil, 0, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		cancel()
+		return nil, 0, fmt.Errorf("ec-shard failed on %s with status %d", targetAddr, resp.StatusCode)
+	}
+
+	wrappedBody := NewIdleTimeoutReader(resp.Body, c.idleTimeout, cancel)
+	return &getObjectReadCloser{ReadCloser: wrappedBody, cancel: cancel}, resp.ContentLength, nil
+}
+
+// PutECShard uploads a single EC shard to a remote node during repair.
+func (c *Client) PutECShard(ctx context.Context, targetAddr, bucket, key string, shardIndex int, meta s3.ObjectMeta, body io.Reader, size int64) error {
+	cancelCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wrappedBody io.Reader = body
+	if body != nil {
+		wrappedBody = NewIdleTimeoutReader(body, c.idleTimeout, cancel)
+	}
+
+	u := fmt.Sprintf("%s/internal/ec-put-shard?bucket=%s&key=%s&shard_index=%d",
+		targetAddr, url.QueryEscape(bucket), url.QueryEscape(key), shardIndex)
+	req, err := http.NewRequestWithContext(cancelCtx, http.MethodPost, u, wrappedBody)
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	req.Header.Set("X-MicroS3-Meta", base64.StdEncoding.EncodeToString(metaBytes))
+	if size >= 0 {
+		req.ContentLength = size
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ec-put-shard failed on %s with status %d: %s", targetAddr, resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// UpdateECMeta updates the object metadata on a remote node (used to flip
+// between REPLICA and EC mode).
+func (c *Client) UpdateECMeta(ctx context.Context, targetAddr, bucket, key string, meta s3.ObjectMeta) error {
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+
+	u := fmt.Sprintf("%s/internal/ec-update-meta?bucket=%s&key=%s", targetAddr, url.QueryEscape(bucket), url.QueryEscape(key))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(metaBytes))
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ec-update-meta failed on %s with status %d: %s", targetAddr, resp.StatusCode, string(respBody))
 	}
 	return nil
 }

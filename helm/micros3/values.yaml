@@ -49,8 +49,16 @@ config:
   log:
     level: "debug"
     format: "text"
+  ec:
+    enabled: false
+    k: 3
+    m: 2
+    minObjectSize: 1048576  # 1 MB
+    minAge: "10m"
+    convertInterval: "5m"
+    restoreInterval: "5m"
 
-service:
+  service:
   headless:
     s3:
       port: 9000

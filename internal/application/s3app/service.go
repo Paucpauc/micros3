@@ -24,6 +24,7 @@ type Service struct {
 	cluster            ClusterManager
 	metrics            MetricsRecorder
 	syncCoordinator    SyncCoordinator
+	ecReader           ECReader
 	logger             *zap.Logger
 	syncingNodes       map[string]time.Time
 	activeWrites       int
@@ -51,6 +52,13 @@ func NewService(storage StorageRepository, replicator Replicator, cluster Cluste
 // client which is created alongside the cluster manager.
 func (s *Service) SetSyncCoordinator(coord SyncCoordinator) {
 	s.syncCoordinator = coord
+}
+
+// SetECReader injects the erasure-coding reader used to reconstruct object
+// data from EC shards. It is set after construction to avoid a circular
+// dependency between the application and replication layers.
+func (s *Service) SetECReader(reader ECReader) {
+	s.ecReader = reader
 }
 
 func (s *Service) SetWriteBlockBehavior(behavior string) {
@@ -416,6 +424,16 @@ func (s *Service) PutObject(ctx context.Context, bucket, key string, r io.Reader
 }
 
 func (s *Service) GetObject(bucket, key string) (io.ReadCloser, s3.ObjectMeta, error) {
+	// Check if the object is stored in erasure-coded form. If so, use the
+	// EC reader to reconstruct the full data from shards distributed across
+	// the cluster.
+	meta, err := s.storage.GetObjectMeta(bucket, key)
+	if err != nil {
+		return nil, s3.ObjectMeta{}, err
+	}
+	if meta.IsEC() && s.ecReader != nil {
+		return s.ecReader.ReadECObject(context.Background(), bucket, key)
+	}
 	return s.storage.GetObject(bucket, key)
 }
 
@@ -598,8 +616,9 @@ func (s *Service) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket, 
 		zap.String("request_id", reqID),
 	)
 
-	// Get source object
-	rc, meta, err := s.storage.GetObject(srcBucket, srcKey)
+	// Get source object. Use s.GetObject (not s.storage.GetObject) so that
+	// erasure-coded objects are transparently reconstructed from shards.
+	rc, meta, err := s.GetObject(srcBucket, srcKey)
 	if err != nil {
 		return s3.ObjectMeta{}, fmt.Errorf("failed to get source object: %w", err)
 	}

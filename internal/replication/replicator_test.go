@@ -21,15 +21,15 @@ type mockCluster struct {
 	followers []string
 }
 
-func (m *mockCluster) NodeID() string                 { return "leader" }
-func (m *mockCluster) IsLeader() bool                 { return true }
-func (m *mockCluster) LeaderInternalAddress() string { return "" }
-func (m *mockCluster) AliveFollowers() []string       { return m.followers }
-func (m *mockCluster) Mode() string                   { return "static" }
-func (m *mockCluster) MarkDead(nodeID string)         {}
-func (m *mockCluster) MarkAlive(nodeID, internalAddr string)         {}
-func (m *mockCluster) Status() string                 { return "READY" }
-func (m *mockCluster) SetLocalStatus(status string)   {}
+func (m *mockCluster) NodeID() string                        { return "leader" }
+func (m *mockCluster) IsLeader() bool                        { return true }
+func (m *mockCluster) LeaderInternalAddress() string         { return "" }
+func (m *mockCluster) AliveFollowers() []string              { return m.followers }
+func (m *mockCluster) Mode() string                          { return "static" }
+func (m *mockCluster) MarkDead(nodeID string)                {}
+func (m *mockCluster) MarkAlive(nodeID, internalAddr string) {}
+func (m *mockCluster) Status() string                        { return "READY" }
+func (m *mockCluster) SetLocalStatus(status string)          {}
 
 type mockStorage struct {
 	stagedData []byte
@@ -48,10 +48,10 @@ func (m *mockStorage) GetTransaction(txID string) (s3.Transaction, error) {
 func (m *mockStorage) GetStagedObjectReader(txID string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(m.stagedData)), nil
 }
-func (m *mockStorage) CreateBucket(bucket string) error         { return nil }
-func (m *mockStorage) DeleteBucket(bucket string) error         { return nil }
-func (m *mockStorage) HasBucket(bucket string) (bool, error)    { return true, nil }
-func (m *mockStorage) ListBuckets() ([]string, error)           { return nil, nil }
+func (m *mockStorage) CreateBucket(bucket string) error      { return nil }
+func (m *mockStorage) DeleteBucket(bucket string) error      { return nil }
+func (m *mockStorage) HasBucket(bucket string) (bool, error) { return true, nil }
+func (m *mockStorage) ListBuckets() ([]string, error)        { return nil, nil }
 func (m *mockStorage) GetObject(bucket, key string) (io.ReadCloser, s3.ObjectMeta, error) {
 	return nil, s3.ObjectMeta{}, nil
 }
@@ -79,7 +79,22 @@ func (m *mockStorage) AbortMultipartUpload(bucket, uploadID string) error { retu
 func (m *mockStorage) GetMultipartUpload(bucket, uploadID string) (s3.MultipartUpload, error) {
 	return s3.MultipartUpload{}, nil
 }
-func (m *mockStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error) { return nil, nil }
+func (m *mockStorage) ListMultipartUploads(bucket string) ([]s3.MultipartUpload, error) {
+	return nil, nil
+}
+
+// EC shard no-op stubs (EC is not exercised in unit tests).
+func (m *mockStorage) PutECShard(bucket, key string, shardIndex int, r io.Reader, size int64, meta s3.ObjectMeta) error {
+	return nil
+}
+func (m *mockStorage) GetECShard(bucket, key string, shardIndex int) (io.ReadCloser, error) {
+	return nil, io.ErrUnexpectedEOF
+}
+func (m *mockStorage) HasECShard(bucket, key string, shardIndex int) (bool, error) {
+	return false, nil
+}
+func (m *mockStorage) DeleteECShard(bucket, key string, shardIndex int) error        { return nil }
+func (m *mockStorage) UpdateObjectMeta(bucket, key string, meta s3.ObjectMeta) error { return nil }
 
 func TestReplicatorParallelPhases(t *testing.T) {
 	var mu sync.Mutex

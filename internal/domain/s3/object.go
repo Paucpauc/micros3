@@ -47,6 +47,31 @@ const (
 	OpDelete = "DELETE"
 )
 
+// StorageMode describes how an object's data is stored across the cluster.
+//
+//   - StorageModeReplica: the full object data is replicated to every node
+//     (the original behaviour before EC support).
+//   - StorageModeEC: the object is split into k data shards and m parity
+//     shards (Reed-Solomon). Each node stores exactly one shard plus the
+//     full metadata. The shard index held by the local node is recorded in
+//     ECChunkIndex.
+type StorageMode string
+
+const (
+	StorageModeReplica StorageMode = "REPLICA"
+	StorageModeEC      StorageMode = "EC"
+)
+
+// ECParams describes the erasure-coding scheme used for an object.
+type ECParams struct {
+	// K is the number of data shards.
+	K int `json:"k"`
+	// M is the number of parity shards.
+	M int `json:"m"`
+	// ShardSize is the size of a single (padded) shard in bytes.
+	ShardSize int64 `json:"shard_size"`
+}
+
 // ObjectMeta represents metadata for a stored object
 type ObjectMeta struct {
 	ContentType   string            `json:"content_type"`
@@ -56,6 +81,25 @@ type ObjectMeta struct {
 	CreatedAt     time.Time         `json:"created_at"`
 	ModifiedAt    time.Time         `json:"modified_at"`
 	UserMetadata  map[string]string `json:"user_metadata,omitempty"`
+
+	// StorageMode indicates whether the object is stored as a full replica
+	// or as an erasure-coded shard. Defaults to REPLICA when empty for
+	// backward compatibility with existing metadata files.
+	StorageMode StorageMode `json:"storage_mode,omitempty"`
+
+	// ECParams is populated when StorageMode == StorageModeEC. It records
+	// the (k+m) scheme and the shard size so that any node can reason about
+	// the object layout.
+	ECParams ECParams `json:"ec_params,omitempty"`
+
+	// ECChunkIndex is the zero-based shard index stored on the local node
+	// when StorageMode == StorageModeEC. For REPLICA objects it is ignored.
+	ECChunkIndex int `json:"ec_chunk_index,omitempty"`
+}
+
+// IsEC returns true when the object is stored in erasure-coded form.
+func (m ObjectMeta) IsEC() bool {
+	return m.StorageMode == StorageModeEC
 }
 
 // Transaction represents a 2PC transaction log
@@ -128,5 +172,3 @@ type CompletePart struct {
 	PartNumber int    `json:"part_number"`
 	ETag       string `json:"etag"`
 }
-
-

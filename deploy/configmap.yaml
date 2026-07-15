@@ -37,3 +37,11 @@ data:
     log:
       level: "debug"
       format: "text"
+    ec:
+      enabled: false
+      k: 3
+      m: 2
+      min_object_size: 1048576  # 1 MB
+      min_age: "10m"
+      convert_interval: "5m"
+      restore_interval: "5m"

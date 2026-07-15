@@ -55,6 +55,10 @@ func NewHandler(
 	mux.HandleFunc("/internal/sync-delete", h.handleSyncDelete)
 	mux.HandleFunc("/internal/s3-proxy", h.handleS3Proxy)
 	mux.HandleFunc("/internal/set-status", h.handleSetStatus)
+	mux.HandleFunc("/internal/ec-meta", h.handleECMeta)
+	mux.HandleFunc("/internal/ec-shard", h.handleECShard)
+	mux.HandleFunc("/internal/ec-put-shard", h.handleECPutShard)
+	mux.HandleFunc("/internal/ec-update-meta", h.handleECUpdateMeta)
 
 	return h.verifyTokenMiddleware(mux)
 }
@@ -530,6 +534,159 @@ func (h *InternalHandler) handleSetStatus(w http.ResponseWriter, r *http.Request
 	h.logger.Info("Received status update request", zap.String("status", status))
 	h.cluster.SetLocalStatus(status)
 	w.WriteHeader(http.StatusOK)
+}
+
+// --- EC (Erasure Coding) Handlers ---
+
+// handleECMeta returns the metadata for a given object, including the EC
+// storage mode, params, and the local shard index. The leader uses this
+// to discover which shards each node holds.
+func (h *InternalHandler) handleECMeta(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+	bucket := q.Get("bucket")
+	key := q.Get("key")
+	if bucket == "" || key == "" {
+		http.Error(w, "Missing bucket or key query parameter", http.StatusBadRequest)
+		return
+	}
+
+	meta, err := h.storage.GetObjectMeta(bucket, key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(meta)
+}
+
+// handleECShard returns a specific EC shard by index. The leader requests
+// shards from nodes during read reconstruction and repair.
+func (h *InternalHandler) handleECShard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+	bucket := q.Get("bucket")
+	key := q.Get("key")
+	shardIdxStr := q.Get("shard_index")
+	if bucket == "" || key == "" || shardIdxStr == "" {
+		http.Error(w, "Missing bucket, key, or shard_index query parameter", http.StatusBadRequest)
+		return
+	}
+
+	shardIdx, err := strconv.Atoi(shardIdxStr)
+	if err != nil {
+		http.Error(w, "Invalid shard_index", http.StatusBadRequest)
+		return
+	}
+
+	rc, err := h.storage.GetECShard(bucket, key, shardIdx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	defer rc.Close()
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, rc)
+}
+
+// handleECPutShard receives a single EC shard and writes it to local storage.
+// Used by the leader during repair to push reconstructed/missing shards to
+// nodes that need them.
+func (h *InternalHandler) handleECPutShard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+	bucket := q.Get("bucket")
+	key := q.Get("key")
+	shardIdxStr := q.Get("shard_index")
+	if bucket == "" || key == "" || shardIdxStr == "" {
+		http.Error(w, "Missing bucket, key, or shard_index query parameter", http.StatusBadRequest)
+		return
+	}
+
+	shardIdx, err := strconv.Atoi(shardIdxStr)
+	if err != nil {
+		http.Error(w, "Invalid shard_index", http.StatusBadRequest)
+		return
+	}
+
+	metaB64 := r.Header.Get("X-MicroS3-Meta")
+	if metaB64 == "" {
+		http.Error(w, "Missing X-MicroS3-Meta header", http.StatusBadRequest)
+		return
+	}
+
+	var meta s3.ObjectMeta
+	metaBytes, err := base64.StdEncoding.DecodeString(metaB64)
+	if err != nil {
+		http.Error(w, "Invalid X-MicroS3-Meta base64", http.StatusBadRequest)
+		return
+	}
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		http.Error(w, "Invalid metadata JSON", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.storage.PutECShard(bucket, key, shardIdx, r.Body, r.ContentLength, meta); err != nil {
+		reqID := s3.GetRequestID(r.Context())
+		h.logger.Error("Failed to store EC shard",
+			zap.String("bucket", bucket),
+			zap.String("key", key),
+			zap.Int("shard_index", shardIdx),
+			zap.Error(err),
+			zap.String("request_id", reqID),
+		)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "OK"})
+}
+
+// handleECUpdateMeta updates the metadata for an existing object. Used by
+// the leader to flip an object between REPLICA and EC mode.
+func (h *InternalHandler) handleECUpdateMeta(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+	bucket := q.Get("bucket")
+	key := q.Get("key")
+	if bucket == "" || key == "" {
+		http.Error(w, "Missing bucket or key query parameter", http.StatusBadRequest)
+		return
+	}
+
+	var meta s3.ObjectMeta
+	if err := json.NewDecoder(r.Body).Decode(&meta); err != nil {
+		http.Error(w, "Invalid metadata JSON", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.storage.UpdateObjectMeta(bucket, key, meta); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "OK"})
 }
 
 func (h *InternalHandler) handleS3Proxy(w http.ResponseWriter, r *http.Request) {
