@@ -120,6 +120,7 @@ func main() {
 			logger,
 		)
 		svc.SetECReader(ecMgr)
+		syncCoordinator.SetECReader(ecMgr)
 
 		logger.Info("Erasure coding enabled",
 			zap.Int("k", cfg.EC.K),

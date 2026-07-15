@@ -374,23 +374,30 @@ func (r *FilesystemRepository) ListObjectsV2(bucket, prefix, delimiter, continua
 		Contents: []s3.ObjectInfo{},
 	}
 
-	bucketDataDir := r.dataDir(bucket)
-	if _, err := os.Stat(bucketDataDir); os.IsNotExist(err) {
+	// Walk the metadata directory instead of the data directory. This
+	// ensures that erasure-coded objects (whose data file has been
+	// removed and replaced by EC shards in ecdata/) are still listed,
+	// because every object — replica or EC — has a metadata file.
+	bucketMetaDir := r.metaDir(bucket)
+	if _, err := os.Stat(bucketMetaDir); os.IsNotExist(err) {
 		return result, os.ErrNotExist
 	}
 
-	// Recursively collect all keys
+	// Recursively collect all keys from metadata files (*.json)
 	var keys []string
-	err := filepath.WalkDir(bucketDataDir, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(bucketMetaDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if !d.IsDir() {
-			relPath, err := filepath.Rel(bucketDataDir, path)
+			relPath, err := filepath.Rel(bucketMetaDir, path)
 			if err != nil {
 				return err
 			}
-			keys = append(keys, relPath)
+			// Strip the ".json" suffix to get the object key.
+			if strings.HasSuffix(relPath, ".json") {
+				keys = append(keys, strings.TrimSuffix(relPath, ".json"))
+			}
 		}
 		return nil
 	})
