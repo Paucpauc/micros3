@@ -233,6 +233,7 @@ func (m *mockStorage) HasECShard(bucket, key string, shardIndex int) (bool, erro
 }
 func (m *mockStorage) DeleteECShard(bucket, key string, shardIndex int) error        { return nil }
 func (m *mockStorage) UpdateObjectMeta(bucket, key string, meta s3.ObjectMeta) error { return nil }
+func (m *mockStorage) RemoveReplicaData(bucket, key string) error                    { return nil }
 
 // Replicator Mock
 

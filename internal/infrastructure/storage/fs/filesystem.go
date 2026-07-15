@@ -555,6 +555,19 @@ func (r *FilesystemRepository) UpdateObjectMeta(bucket, key string, meta s3.Obje
 	return r.syncDir(filepath.Dir(metaPath))
 }
 
+// RemoveReplicaData deletes only the full replica data file for an object,
+// leaving the metadata and any EC shards intact. It is used after a
+// successful replica -> EC conversion to reclaim the space occupied by the
+// original full copy. If the data file does not exist, it is a no-op.
+func (r *FilesystemRepository) RemoveReplicaData(bucket, key string) error {
+	dataPath := filepath.Join(r.dataDir(bucket), key)
+	if err := os.Remove(dataPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	r.cleanEmptyDirs(filepath.Dir(dataPath), r.dataDir(bucket))
+	return nil
+}
+
 // DeleteAllECShards removes every EC shard for a given object (used when
 // converting back to replica or deleting an EC object).
 func (r *FilesystemRepository) DeleteAllECShards(bucket, key string) error {

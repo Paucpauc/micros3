@@ -273,12 +273,9 @@ func (m *Manager) ConvertToEC(ctx context.Context, bucket, key string) error {
 		}
 	}
 
-	// 6. Remove the full replica data from the leader (keep only the shard).
-	// The metadata has already been updated by PutECShard.
-	// We remove the data file but keep the meta file (which now says EC).
-	// Actually, PutECShard already wrote the EC meta. We need to remove the
-	// old full data file.
-	if err := m.removeReplicaData(bucket, key); err != nil {
+	// 6. Remove the full replica data from every node (leader + followers).
+	// Each node now stores only its EC shard plus the shared metadata.
+	if err := m.removeReplicaFromAllNodes(ctx, bucket, key, followers); err != nil {
 		m.logger.Warn("Failed to remove old replica data after EC conversion",
 			zap.String("bucket", bucket),
 			zap.String("key", key),
@@ -295,43 +292,45 @@ func (m *Manager) ConvertToEC(ctx context.Context, bucket, key string) error {
 	return nil
 }
 
-// removeReplicaData removes the full replica data file for an object that
-// has been converted to EC. The metadata file is kept (it now describes the
-// EC layout).
-func (m *Manager) removeReplicaData(bucket, key string) error {
-	// Use DeleteObject which removes data + meta + shards, then re-write
-	// the EC meta. Actually, we need a more surgical approach: just remove
-	// the data file. We use the storage's DeleteObject but that also removes
-	// meta and shards. Instead, we re-put the EC shard for the leader after.
-	//
-	// Simpler: read current meta, delete object, re-put leader shard.
-	meta, err := m.storage.GetObjectMeta(bucket, key)
-	if err != nil {
-		return err
-	}
-	if !meta.IsEC() {
-		return nil // nothing to do
+// removeReplicaFromAllNodes removes the full replica data file for an
+// object that has been converted to EC from every node in the cluster.
+// The metadata and EC shards are left intact — only the original full
+// replica data file is deleted. This reclaims the space occupied by the
+// full copy on each node.
+func (m *Manager) removeReplicaFromAllNodes(ctx context.Context, bucket, key string, followers []string) error {
+	var firstErr error
+
+	// Remove the replica data on the leader (local).
+	if err := m.storage.RemoveReplicaData(bucket, key); err != nil {
+		m.logger.Warn("Failed to remove local replica data after EC conversion",
+			zap.String("bucket", bucket),
+			zap.String("key", key),
+			zap.Error(err),
+		)
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
 
-	// Read the leader's shard before deleting.
-	shardIdx := meta.ECChunkIndex
-	rc, err := m.storage.GetECShard(bucket, key, shardIdx)
-	if err != nil {
-		return fmt.Errorf("read leader shard before cleanup: %w", err)
-	}
-	shardData, err := io.ReadAll(rc)
-	rc.Close()
-	if err != nil {
-		return fmt.Errorf("read leader shard body: %w", err)
+	// Instruct each follower to remove its replica data as well.
+	for _, follower := range followers {
+		removeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := m.client.RemoveReplicaData(removeCtx, follower, bucket, key)
+		cancel()
+		if err != nil {
+			m.logger.Warn("Failed to remove replica data on follower after EC conversion",
+				zap.String("bucket", bucket),
+				zap.String("key", key),
+				zap.String("follower", follower),
+				zap.Error(err),
+			)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
 	}
 
-	// Delete the full object (removes data + meta + shards).
-	if err := m.storage.DeleteObject(bucket, key); err != nil {
-		return fmt.Errorf("delete old object: %w", err)
-	}
-
-	// Re-put the leader's shard and meta.
-	return m.storage.PutECShard(bucket, key, shardIdx, bytes.NewReader(shardData), int64(len(shardData)), meta)
+	return firstErr
 }
 
 // ReadECObject reconstructs the full object data from EC shards. The leader

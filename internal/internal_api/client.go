@@ -523,6 +523,31 @@ func (c *Client) PutECShard(ctx context.Context, targetAddr, bucket, key string,
 	return nil
 }
 
+// RemoveReplicaData instructs a remote node to delete the full replica data
+// file for an object, leaving the metadata and any EC shards intact. The
+// leader sends this to every follower after a successful replica -> EC
+// conversion so that the original full copy is reclaimed.
+func (c *Client) RemoveReplicaData(ctx context.Context, targetAddr, bucket, key string) error {
+	u := fmt.Sprintf("%s/internal/ec-remove-replica?bucket=%s&key=%s", targetAddr, url.QueryEscape(bucket), url.QueryEscape(key))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ec-remove-replica failed on %s with status %d: %s", targetAddr, resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 // UpdateECMeta updates the object metadata on a remote node (used to flip
 // between REPLICA and EC mode).
 func (c *Client) UpdateECMeta(ctx context.Context, targetAddr, bucket, key string, meta s3.ObjectMeta) error {
