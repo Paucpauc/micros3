@@ -3,6 +3,7 @@ package replication
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,9 +20,10 @@ var _ s3app.SyncCoordinator = (*SyncCoordinatorImpl)(nil)
 // them with its own, pushes missing/updated objects via 2PC, and deletes
 // extraneous keys on the follower.
 type SyncCoordinatorImpl struct {
-	client  *internal_api.Client
-	storage s3app.StorageRepository
-	logger  *zap.Logger
+	client   *internal_api.Client
+	storage  s3app.StorageRepository
+	ecReader s3app.ECReader
+	logger   *zap.Logger
 }
 
 // NewSyncCoordinator creates a leader-driven sync coordinator.
@@ -35,6 +37,14 @@ func NewSyncCoordinator(
 		storage: storage,
 		logger:  logger,
 	}
+}
+
+// SetECReader injects the erasure-coding reader so that the coordinator can
+// reconstruct EC objects when pushing them to followers during sync. It is
+// set after construction because the EC manager is created later in the
+// composition root.
+func (sc *SyncCoordinatorImpl) SetECReader(reader s3app.ECReader) {
+	sc.ecReader = reader
 }
 
 // SyncFollower drives the synchronization of a single follower. It is called
@@ -122,12 +132,28 @@ func (sc *SyncCoordinatorImpl) SyncFollower(ctx context.Context, nodeID, followe
 }
 
 // pushObject sends a single object from the leader's local storage to the
-// follower using the 2PC Prepare/Commit protocol.
+// follower using the 2PC Prepare/Commit protocol. For erasure-coded objects
+// the full data is reconstructed from shards via the EC reader; for regular
+// replicas the data is read directly from local storage.
 func (sc *SyncCoordinatorImpl) pushObject(ctx context.Context, followerAddr string, keyInfo internal_api.KeyInfo) error {
-	// Read object from local storage
-	rc, meta, err := sc.storage.GetObject(keyInfo.Bucket, keyInfo.Key)
+	// Check whether the object is erasure-coded. If so, reconstruct the
+	// full data from shards; otherwise read the replica directly.
+	meta, err := sc.storage.GetObjectMeta(keyInfo.Bucket, keyInfo.Key)
 	if err != nil {
-		return fmt.Errorf("failed to read local object: %w", err)
+		return fmt.Errorf("failed to read object meta: %w", err)
+	}
+
+	var rc io.ReadCloser
+	if meta.IsEC() && sc.ecReader != nil {
+		rc, meta, err = sc.ecReader.ReadECObject(ctx, keyInfo.Bucket, keyInfo.Key)
+		if err != nil {
+			return fmt.Errorf("failed to reconstruct EC object: %w", err)
+		}
+	} else {
+		rc, meta, err = sc.storage.GetObject(keyInfo.Bucket, keyInfo.Key)
+		if err != nil {
+			return fmt.Errorf("failed to read local object: %w", err)
+		}
 	}
 	defer rc.Close()
 
