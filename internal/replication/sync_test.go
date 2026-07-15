@@ -24,16 +24,17 @@ type mockSyncCluster struct {
 	status string
 }
 
-func (m *mockSyncCluster) NodeID() string                        { return "follower-1" }
-func (m *mockSyncCluster) IsLeader() bool                        { return false }
-func (m *mockSyncCluster) LeaderInternalAddress() string         { return "" }
-func (m *mockSyncCluster) AliveFollowers() []string              { return nil }
-func (m *mockSyncCluster) KnownFollowers() []string              { return nil }
-func (m *mockSyncCluster) Mode() string                          { return "static" }
-func (m *mockSyncCluster) MarkDead(nodeID string)                {}
-func (m *mockSyncCluster) MarkAlive(nodeID, internalAddr string) {}
-func (m *mockSyncCluster) Status() string                        { return m.status }
-func (m *mockSyncCluster) SetLocalStatus(status string)          { m.status = status }
+func (m *mockSyncCluster) NodeID() string                               { return "follower-1" }
+func (m *mockSyncCluster) IsLeader() bool                               { return false }
+func (m *mockSyncCluster) LeaderInternalAddress() string                { return "" }
+func (m *mockSyncCluster) AliveFollowers() []string                     { return nil }
+func (m *mockSyncCluster) KnownFollowers() []string                     { return nil }
+func (m *mockSyncCluster) Mode() string                                 { return "static" }
+func (m *mockSyncCluster) MarkDead(nodeID string)                       {}
+func (m *mockSyncCluster) MarkAlive(nodeID, internalAddr string)        {}
+func (m *mockSyncCluster) RegisterFollower(nodeID, internalAddr string) {}
+func (m *mockSyncCluster) Status() string                               { return m.status }
+func (m *mockSyncCluster) SetLocalStatus(status string)                 { m.status = status }
 
 type mockSyncStorage struct {
 	mu            sync.Mutex

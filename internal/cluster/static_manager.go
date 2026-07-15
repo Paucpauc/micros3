@@ -147,11 +147,12 @@ func (m *StaticClusterManager) AliveFollowers() []string {
 	return followers
 }
 
-// KnownFollowers returns the internal addresses of all known follower
-// nodes that are not OFFLINE (i.e. READY or SYNCING). Unlike AliveFollowers
-// which only returns READY nodes, this includes nodes that are still
-// synchronizing — this is critical for EC shard reconstruction after a
-// cluster restart when all followers are in SYNCING state.
+// KnownFollowers returns the internal addresses of all discovered follower
+// nodes, regardless of their status (READY, SYNCING, or OFFLINE). This is
+// used by the EC manager to broadcast shard-discovery requests: even if a
+// node is marked OFFLINE in the leader's state, it may have just rebooted
+// and already be serving internal API requests. A failed request to a
+// truly-down node is simply skipped by the caller.
 func (m *StaticClusterManager) KnownFollowers() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -161,9 +162,7 @@ func (m *StaticClusterManager) KnownFollowers() []string {
 		if id == m.localNodeID {
 			continue
 		}
-		if ns.node.Status != cluster.StatusOffline {
-			followers = append(followers, ns.node.InternalAddress)
-		}
+		followers = append(followers, ns.node.InternalAddress)
 	}
 	return followers
 }
@@ -198,6 +197,46 @@ func (m *StaticClusterManager) MarkAlive(nodeID, internalAddr string) {
 			ns.node.Status = cluster.StatusReady
 		}
 	}
+}
+
+// RegisterFollower ensures a follower node is present in the leader's
+// nodesState map before sync begins. If the node is already known,
+// its internal address is updated. If the node is unknown (e.g.
+// discovery loop hasn't run yet after a cluster restart), it is added
+// with SYNCING status so that KnownFollowers() includes it and
+// ReadECObject can query it for EC shards during the sync process.
+func (m *StaticClusterManager) RegisterFollower(nodeID, internalAddr string) {
+	if nodeID == "" || nodeID == m.localNodeID {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ns, exists := m.nodesState[nodeID]
+	if exists {
+		if internalAddr != "" && ns.node.InternalAddress != internalAddr {
+			m.logger.Info("Node address updated during register",
+				zap.String("node_id", nodeID),
+				zap.String("old_addr", ns.node.InternalAddress),
+				zap.String("new_addr", internalAddr),
+			)
+			ns.node.InternalAddress = internalAddr
+		}
+		return
+	}
+
+	m.nodesState[nodeID] = &nodeState{
+		node: &cluster.Node{
+			ID:              nodeID,
+			InternalAddress: internalAddr,
+			Role:            cluster.RoleFollower,
+			Status:          cluster.StatusSyncing,
+		},
+	}
+	m.logger.Info("Follower registered before sync",
+		zap.String("node_id", nodeID),
+		zap.String("address", internalAddr),
+	)
 }
 
 func (m *StaticClusterManager) Status() string {

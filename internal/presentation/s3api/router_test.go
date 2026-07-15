@@ -21,16 +21,17 @@ import (
 
 type mockCluster struct{}
 
-func (m *mockCluster) NodeID() string                        { return "node-1" }
-func (m *mockCluster) IsLeader() bool                        { return true }
-func (m *mockCluster) LeaderInternalAddress() string         { return "" }
-func (m *mockCluster) AliveFollowers() []string              { return nil }
-func (m *mockCluster) KnownFollowers() []string              { return nil }
-func (m *mockCluster) Mode() string                          { return "single" }
-func (m *mockCluster) MarkDead(nodeID string)                {}
-func (m *mockCluster) MarkAlive(nodeID, internalAddr string) {}
-func (m *mockCluster) Status() string                        { return "READY" }
-func (m *mockCluster) SetLocalStatus(status string)          {}
+func (m *mockCluster) NodeID() string                               { return "node-1" }
+func (m *mockCluster) IsLeader() bool                               { return true }
+func (m *mockCluster) LeaderInternalAddress() string                { return "" }
+func (m *mockCluster) AliveFollowers() []string                     { return nil }
+func (m *mockCluster) KnownFollowers() []string                     { return nil }
+func (m *mockCluster) Mode() string                                 { return "single" }
+func (m *mockCluster) MarkDead(nodeID string)                       {}
+func (m *mockCluster) MarkAlive(nodeID, internalAddr string)        {}
+func (m *mockCluster) RegisterFollower(nodeID, internalAddr string) {}
+func (m *mockCluster) Status() string                               { return "READY" }
+func (m *mockCluster) SetLocalStatus(status string)                 {}
 
 type mockMetricsRecorder struct{}
 
@@ -327,13 +328,14 @@ type mockClusterManager struct {
 	status   string
 }
 
-func (m *mockClusterManager) NodeID() string                        { return "node" }
-func (m *mockClusterManager) IsLeader() bool                        { return m.isLeader }
-func (m *mockClusterManager) LeaderInternalAddress() string         { return "" }
-func (m *mockClusterManager) AliveFollowers() []string              { return nil }
-func (m *mockClusterManager) KnownFollowers() []string              { return nil }
-func (m *mockClusterManager) Mode() string                          { return "static" }
-func (m *mockClusterManager) MarkDead(nodeID string)                {}
-func (m *mockClusterManager) MarkAlive(nodeID, internalAddr string) {}
-func (m *mockClusterManager) Status() string                        { return m.status }
-func (m *mockClusterManager) SetLocalStatus(status string)          {}
+func (m *mockClusterManager) NodeID() string                               { return "node" }
+func (m *mockClusterManager) IsLeader() bool                               { return m.isLeader }
+func (m *mockClusterManager) LeaderInternalAddress() string                { return "" }
+func (m *mockClusterManager) AliveFollowers() []string                     { return nil }
+func (m *mockClusterManager) KnownFollowers() []string                     { return nil }
+func (m *mockClusterManager) Mode() string                                 { return "static" }
+func (m *mockClusterManager) MarkDead(nodeID string)                       {}
+func (m *mockClusterManager) MarkAlive(nodeID, internalAddr string)        {}
+func (m *mockClusterManager) RegisterFollower(nodeID, internalAddr string) {}
+func (m *mockClusterManager) Status() string                               { return m.status }
+func (m *mockClusterManager) SetLocalStatus(status string)                 {}

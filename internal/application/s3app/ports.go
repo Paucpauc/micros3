@@ -114,16 +114,24 @@ type ClusterManager interface {
 	IsLeader() bool
 	LeaderInternalAddress() string
 	AliveFollowers() []string
-	// KnownFollowers returns the internal addresses of all known follower
-	// nodes that are not OFFLINE — i.e. nodes in READY or SYNCING state.
-	// This is used by the EC manager to discover and fetch EC shards from
-	// nodes that are still synchronizing (AliveFollowers only returns
-	// READY nodes, which would make EC reconstruction impossible after a
-	// cluster restart when all followers are in SYNCING).
+	// KnownFollowers returns the internal addresses of all discovered
+	// follower nodes regardless of their status (READY, SYNCING, or
+	// OFFLINE). This is used by the EC manager to broadcast shard-discovery
+	// requests: even if a node is marked OFFLINE in the leader's state, it
+	// may have just rebooted and already be serving internal API requests.
+	// A failed request to a truly-down node is simply skipped by the caller.
 	KnownFollowers() []string
 	Mode() string
 	MarkDead(nodeID string)
 	MarkAlive(nodeID, internalAddr string)
+	// RegisterFollower ensures a follower node is present in the leader's
+	// follower state map before sync begins. If the node is already known,
+	// its internal address is updated (the pod may have been rescheduled).
+	// If the node is unknown (e.g. discovery loop hasn't run yet after a
+	// cluster restart), it is added with SYNCING status so that
+	// KnownFollowers() includes it and ReadECObject can query it for EC
+	// shards during the sync process.
+	RegisterFollower(nodeID, internalAddr string)
 	Status() string
 	SetLocalStatus(status string)
 }
